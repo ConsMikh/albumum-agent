@@ -81,17 +81,21 @@ AUTH_CODES = {
 KEY_FORMAT = re.compile(r"alb_[a-z0-9]{8}_[A-Za-z0-9_-]{43}\Z")
 KEY_MALFORMED = (
     "Ключ агента не похож на ключ Albumum (alb_…, 56 знаков) — скорее всего, при вставке "
-    "попали лишние символы. Скопируйте ключ еще раз и выполните albumum init; на Windows "
-    "вставляйте в скрытый ввод правой кнопкой мыши или Ctrl+Shift+V"
+    "попали лишние символы. Нажмите «Копировать» в окне ключа, выполните albumum init и на "
+    "вопрос о ключе просто нажмите Enter — ключ возьмется из буфера обмена"
 )
 
 
-def check_key(token: str, *, strict: bool = False) -> None:
+def check_key(token: str, *, strict: bool = False, received: int | None = None) -> None:
     """Ключ с управляющими символами не отправляется: прокси ответит голым 400, а не отказом
     системы. `strict` — полная сверка формата (при вводе в init). Ключ в сообщение не попадает."""
     bad = any(ord(ch) < 0x21 or ord(ch) == 0x7F for ch in token)
     if bad or (strict and not KEY_FORMAT.match(token)):
-        raise ApiError(None, "key_malformed", KEY_MALFORMED)
+        # Только длина и начало «alb_» — по ним видно, что пришло; сам ключ не выводится.
+        body = None
+        if received is not None:
+            body = {"received_length": received, "starts_with_alb": token.startswith("alb_")}
+        raise ApiError(None, "key_malformed", KEY_MALFORMED, body)
 
 
 ACTION_CONFLICTS = {"revision_mismatch", "unfilled_places", "format_affects_pages"}
