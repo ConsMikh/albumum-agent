@@ -1,4 +1,7 @@
-"""Конфигурация утилиты: адрес системы и ключ агента (~/.config/albumum/config.toml)."""
+"""Конфигурация утилиты: адрес системы и ключ агента (~/.config/albumum/config.toml).
+
+Порядок: флаг `--url` → `ALBUMUM_URL`, `ALBUMUM_TOKEN` → файл. Флага для ключа нет и не будет:
+ключ задается только `albumum init` (скрытым вводом), переменной окружения или файлом."""
 
 import json
 import os
@@ -6,6 +9,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 CONFIG_PATH = Path(os.environ.get("ALBUMUM_CONFIG", "~/.config/albumum/config.toml")).expanduser()
 
@@ -18,6 +22,21 @@ class ConfigError(Exception):
 class Config:
     url: str | None
     token: str | None
+    key_url: str | None = None  # адрес, для которого задан ключ: ключ годится только для него
+
+
+def origin(url: str | None) -> tuple[str, str, int] | None:
+    """Схема, хост и порт адреса — по ним сравнивается, для того ли адреса ключ."""
+    if not url:
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port or {"https": 443, "http": 80}.get(parts.scheme.lower())
+    except ValueError:
+        return None
+    if not parts.hostname or port is None:
+        return None
+    return parts.scheme.lower(), parts.hostname.lower().rstrip("."), port
 
 
 def _read_file() -> dict:
@@ -34,17 +53,38 @@ def _read_file() -> dict:
     return {k: v for k, v in data.items() if isinstance(v, str)}
 
 
-def load() -> Config:
-    """Переменные окружения важнее файла."""
+def load(url: str | None = None) -> Config:
+    """`url` — значение флага `--url`; он важнее окружения, окружение важнее файла.
+
+    Ключ привязан к адресу: ключ файла — к адресу файла, `ALBUMUM_TOKEN` — к `ALBUMUM_URL`
+    (без него — тоже к адресу файла). `key_url` — этот адрес; совпадает ли он с итоговым
+    `url`, проверяет команда, которой нужен ключ (`commands.connect`)."""
     stored = _read_file()
-    url = os.environ.get("ALBUMUM_URL") or stored.get("url")
-    token = os.environ.get("ALBUMUM_TOKEN") or stored.get("token")
-    return Config(url=url.rstrip("/") if url else None, token=token or None)
+    env_url = os.environ.get("ALBUMUM_URL") or None
+    env_token = os.environ.get("ALBUMUM_TOKEN") or None
+    final = url or env_url or stored.get("url")
+    if env_token:
+        token, key_url = env_token, env_url or stored.get("url")
+    else:
+        token, key_url = stored.get("token") or None, stored.get("url")
+    return Config(
+        url=final.rstrip("/") if final else None,
+        token=token,
+        key_url=key_url.rstrip("/") if key_url else None,
+    )
 
 
-def save(*, url: str | None = None, token: str | None = None) -> None:
-    """Обновляет переданные поля, остальные сохраняет. Файл доступен только владельцу."""
+def stored() -> dict[str, str]:
+    """Поля файла как есть, без окружения: ключ файла привязан к адресу файла."""
+    return _read_file()
+
+
+def save(*, url: str | None = None, token: str | None = None, drop_token: bool = False) -> None:
+    """Обновляет переданные поля, остальные сохраняет; `drop_token` — стирает ключ.
+    Файл доступен только владельцу."""
     values = _read_file()
+    if drop_token:
+        values.pop("token", None)
     if url is not None:
         values["url"] = url.rstrip("/")
     if token is not None:

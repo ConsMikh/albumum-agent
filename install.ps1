@@ -219,17 +219,22 @@
       if ((Invoke-Tool $uv @('tool', 'update-shell') -Quiet).Code -ne 0) { Warn "не удалось добавить $bin в PATH" }
       Say 'В этом окне albumum уже работает; агента и другие открытые окна терминала откройте заново.'
     }
-    # Адрес системы задаёт человек (albumum config set-url); без него проверять нечего.
-    $check = Invoke-Tool $albumum @('version') -Quiet
+    # Адрес и ключ задаёт человек (albumum init); без ключа проверять нечего.
+    $check = Invoke-Tool $albumum @('whoami') -Quiet
     if ($check.Code -eq 0) {
-      Say 'Готово: Albumum подключён. Обновление после нового выпуска: albumum update'
-    } elseif ($check.Code -eq 2) {
-      Say 'Набор установлен, но версии набора и системы расходятся — выполните albumum version.'
+      if ((Invoke-Tool $albumum @('version') -Quiet).Code -eq 5) {
+        Say 'Albumum подключён, но набор нужно обновить: albumum update'
+      } else {
+        Say 'Готово: Albumum подключён. Обновление после нового выпуска: albumum update'
+      }
+    } elseif ($check.Code -eq 1 -and $check.Out -notmatch '"no_url"') {
+      Say 'Нет связи с системой — проверьте адрес и сеть, затем: albumum whoami'
     } else {
       Say 'Что дальше:'
-      Say '  1. Задайте адрес системы: albumum config set-url https://адрес-вашего-albumum'
-      Say '  2. Проверьте связь: albumum version'
-      Say '  3. Или скажите своему агенту: «подключи меня к Albumum».'
+      Say '  1. Выпустите ключ агента в редакторе Albumum (раздел «Агент»).'
+      Say '  2. Подключите его: albumum init — спросит адрес системы и ключ (ввод скрыт).'
+      Say '  3. Проверьте: albumum whoami'
+      Say '  Или скажите своему агенту: «подключи меня к Albumum».'
     }
   }
 

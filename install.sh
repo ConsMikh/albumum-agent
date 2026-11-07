@@ -198,18 +198,25 @@ main() {
       say "Откройте терминал (и агента) заново, чтобы команда albumum нашлась."
       ;;
   esac
-  # Адрес системы задаёт человек (albumum config set-url); без него проверять нечего.
+  # Адрес и ключ задаёт человек (albumum init); без ключа проверять нечего.
   code=0
-  albumum version >/dev/null 2>&1 || code=$?
+  answer=$(albumum whoami 2>/dev/null) || code=$?
   if [ "$code" = 0 ]; then
-    say "Готово: Albumum подключён. Обновление после нового выпуска: albumum update"
-  elif [ "$code" = 2 ]; then
-    say "Набор установлен, но версии набора и системы расходятся — выполните albumum version."
+    code=0
+    albumum version >/dev/null 2>&1 || code=$?
+    if [ "$code" = 5 ]; then
+      say "Albumum подключён, но набор нужно обновить: albumum update"
+    else
+      say "Готово: Albumum подключён. Обновление после нового выпуска: albumum update"
+    fi
+  elif [ "$code" = 1 ] && ! printf '%s' "$answer" | grep -q '"no_url"'; then
+    say "Нет связи с системой — проверьте адрес и сеть, затем: albumum whoami"
   else
     say "Что дальше:"
-    say "  1. Задайте адрес системы: albumum config set-url https://адрес-вашего-albumum"
-    say "  2. Проверьте связь: albumum version"
-    say "  3. Или скажите своему агенту: «подключи меня к Albumum»."
+    say "  1. Выпустите ключ агента в редакторе Albumum (раздел «Агент»)."
+    say "  2. Подключите его: albumum init — спросит адрес системы и ключ (ввод скрыт)."
+    say "  3. Проверьте: albumum whoami"
+    say "  Или скажите своему агенту: «подключи меня к Albumum»."
   fi
 }
 
