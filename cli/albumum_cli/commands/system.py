@@ -12,7 +12,7 @@ from albumum_cli import SUPPORTED_CONTRACT, __version__, client, config, version
 from albumum_cli.client import ApiClient, ApiError
 from albumum_cli.commands import NO_URL, connect
 from albumum_cli.output import EXIT_CONTRACT, EXIT_ERROR, EXIT_OK, emit, fail, note
-from albumum_cli.secret_input import ask, read_secret
+from albumum_cli.secret_input import ask, clean_key, read_secret
 
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10)
 MIRROR_RAW = "https://raw.githubusercontent.com/ConsMikh/albumum-agent"
@@ -38,7 +38,8 @@ def _init(args) -> int:
         default = config.stored().get("url") or os.environ.get("ALBUMUM_URL") or DEFAULT_URL
         url = ask(f"Адрес системы [{default}]: ", default=default)
     url = _valid_url(url)
-    token = read_secret("Ключ агента (ввод скрыт): ")
+    token = clean_key(read_secret("Ключ агента (ввод скрыт): "))
+    client.check_key(token, strict=True)
     me = ApiClient(url, token, transport=args.transport).run("me.get")
     config.save(url=url, token=token)
     note(f"Ключ проверен и сохранен в {config.CONFIG_PATH}")
