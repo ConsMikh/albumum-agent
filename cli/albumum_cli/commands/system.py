@@ -16,6 +16,8 @@ from albumum_cli.secret_input import ask, read_secret
 
 CREATE_NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10)
 MIRROR_RAW = "https://raw.githubusercontent.com/ConsMikh/albumum-agent"
+# Адрес по умолчанию в `albumum init`, если адрес еще не сохранен и не задан ALBUMUM_URL.
+DEFAULT_URL = "https://albumum.fammix.org"
 
 
 def _valid_url(url: str) -> str:
@@ -31,7 +33,11 @@ def _valid_url(url: str) -> str:
 
 def _init(args) -> int:
     """Адрес и ключ (скрытым вводом) — проверка ключа операцией me.get — только потом файл."""
-    url = _valid_url(args.url or ask("Адрес системы (https://…): "))
+    url = args.url
+    if not url:
+        default = config.stored().get("url") or os.environ.get("ALBUMUM_URL") or DEFAULT_URL
+        url = ask(f"Адрес системы [{default}]: ", default=default)
+    url = _valid_url(url)
     token = read_secret("Ключ агента (ввод скрыт): ")
     me = ApiClient(url, token, transport=args.transport).run("me.get")
     config.save(url=url, token=token)

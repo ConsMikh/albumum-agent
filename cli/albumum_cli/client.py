@@ -153,7 +153,14 @@ def _refusal(response: httpx.Response) -> ApiError:
         reason = body.get("reason") or body.get("detail") or f"Система ответила кодом {status}"
         return ApiError(status, body["code"], str(reason), body)
     raw = body if body is not None else response.text[:4000]
-    return ApiError(status, "unexpected_response", f"Система ответила кодом {status}", {"raw": raw})
+    # Адрес запроса и сервер-отправитель: по ним видно, кто ответил — система, служба входа или
+    # промежуточный прокси (ключа в адресе нет, он только в заголовке).
+    details = {
+        "raw": raw,
+        "url": str(response.request.url.copy_with(query=None)),
+        "server": response.headers.get("server"),
+    }
+    return ApiError(status, "unexpected_response", f"Система ответила кодом {status}", details)
 
 
 def _retry_after(response: httpx.Response) -> float:
