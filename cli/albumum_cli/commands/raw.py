@@ -40,11 +40,11 @@ def _body(source: str | None):
     if source is None:
         return None
     try:
-        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
+        text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise ApiError(None, "invalid_input", f"Не удалось прочитать {source}: {exc}") from None
     try:
-        return json.loads(text)
+        return json.loads(text.removeprefix("\ufeff"))  # BOM из PowerShell 5.1
     except ValueError as exc:
         raise ApiError(None, "invalid_input", f"Тело запроса — не JSON: {exc}") from None
 
@@ -91,8 +91,8 @@ def _call(args) -> int:
 
 def register(sub) -> None:
     call = sub.add_parser("call", help="запасной путь: запрос операции контракта как есть")
-    call.add_argument("method", metavar="МЕТОД")
-    call.add_argument("path", metavar="ПУТЬ")
+    call.add_argument("method", metavar="МЕТОД", help="метод HTTP: GET, POST, PUT, PATCH, DELETE")
+    call.add_argument("path", metavar="ПУТЬ", help="путь операции из контракта: /api/…")
     call.add_argument("--json", metavar="ФАЙЛ", help="тело запроса из файла JSON или «-» (stdin)")
     call.add_argument("--query", metavar="К=З", action="append", default=[])
     add_confirm(call)

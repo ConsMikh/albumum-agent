@@ -4,17 +4,20 @@
 Файл листа (`page get -o`) — `{album_id, page_id, revision, document}`: запись берет ревизию из
 него и ничего не перечитывает; конфликт ревизии — 409 с тем, кто и когда менял (код выхода 2)."""
 
+import copy
 from pathlib import Path
 
 from albumum_cli import client
 from albumum_cli.client import ApiError
 from albumum_cli.commands import (
     add_confirm,
+    add_full,
     add_request_id,
     connect,
     done,
     group,
     id_list,
+    match_extension,
     read_json,
     usage,
     write_json,
@@ -41,9 +44,14 @@ def _add(args) -> int:
     if args.position is not None:
         body["position"] = args.position
     path = {"album_id": args.album}
-    return done(
-        connect(args).run("pages.add", path=path, json=body, idempotency_key=args.request_id)
-    )
+    answer = connect(args).run("pages.add", path=path, json=body, idempotency_key=args.request_id)
+    if args.full or not isinstance(answer, dict):
+        return done(answer)
+    pages = [
+        {key: p.get(key) for key in ("id", "kind", "position", "revision")}
+        for p in answer.get("pages", [])
+    ]
+    return done({"album_id": args.album, "added": len(pages), "pages": pages})
 
 
 def _document_of(data, source: str) -> dict:
@@ -145,6 +153,165 @@ def _template(args) -> int:
     return _write(args, "pages.template", args.source, body)
 
 
+# Геометрия и рамка места переходят к заполнившему его элементу (как `_geometry` сервера,
+# albums/templates.py).
+GEOMETRY = ("id", "x", "y", "w", "h", "rotate", "z")
+FRAME = ("shape", "radius", "stroke", "effects")
+MEDIA_KINDS = ("photo", "video")
+MEDIA_ROLES = ("media", *MEDIA_KINDS)
+CENTER = {"scale": 1, "dx": 0, "dy": 0}
+
+
+def crop_value(text: str) -> dict:
+    """Кадр из `--crop`: «dx=0,dy=-0.4,scale=1.2» (любые из полей) или «dx,dy[,scale]»."""
+    crop = dict(CENTER)
+    parts = [p.strip() for p in text.split(",") if p.strip()]
+    try:
+        if all("=" in p for p in parts) and parts:
+            for part in parts:
+                key, _, value = part.partition("=")
+                key = key.strip()
+                if key not in crop:
+                    raise ValueError(key)
+                crop[key] = float(value)
+        elif 2 <= len(parts) <= 3 and not any("=" in p for p in parts):
+            for key, value in zip(("dx", "dy", "scale"), parts, strict=False):
+                crop[key] = float(value)
+        else:
+            raise ValueError(text)
+    except ValueError:
+        raise usage(
+            f"--crop ждет dx=Ч,dy=Ч,scale=Ч (или dx,dy[,scale]): dx и dy от -1 до 1, scale от 1; "
+            f"получено: {text}"
+        ) from None
+    return {k: int(v) if float(v).is_integer() else v for k, v in crop.items()}
+
+
+def place_aspect(el: dict, ratio) -> float:
+    """Пропорции рамки (ширина / высота) на листе `ratio`; круг — 1 (как place_aspect
+    сервера)."""
+    if el.get("shape") == "circle":
+        return 1.0
+    return el["w"] * ratio[0] / (el["h"] * ratio[1])
+
+
+def default_crop(frame_aspect: float, width, height) -> dict:
+    """Кадр нового фото по умолчанию — та же формула, что `default_crop` сервера
+    (albums/templates.py): вертикальное фото, обрезанное рамкой по высоте, — центр кадра на 1/3
+    высоты фото (с упором в верхний край); прочее — по центру."""
+    if not width or not height or width <= 0 or height <= width:
+        return dict(CENTER)
+    tall = frame_aspect * height / width
+    if tall <= 1:
+        return dict(CENTER)
+    return {"scale": 1, "dx": 0, "dy": round(max(-1.0, -tall / (3 * (tall - 1))), 4)}
+
+
+def _is_backdrop(el: dict) -> bool:
+    """Место фона закрывает лист целиком: туда — только фото (как is_backdrop сервера)."""
+    return el["x"] <= 0 and el["y"] <= 0 and el["x"] + el["w"] >= 1 and el["y"] + el["h"] >= 1
+
+
+def _slots(document: dict) -> list[str]:
+    return [
+        f"{e.get('id')}" + (f" ({e['label']})" if e.get("label") else "")
+        for e in document.get("elements", [])
+        if e.get("kind") in MEDIA_KINDS
+        or (e.get("kind") == "place" and e.get("role") in MEDIA_ROLES)
+    ]
+
+
+def filled(el: dict, media: dict, crop: dict) -> dict:
+    """Элемент места с файлом `media`: геометрия, рамка и подпись места остаются, файл и кадр —
+    новые (как `_media_element` сервера)."""
+    is_place = el.get("kind") == "place"
+    out = {k: el[k] for k in GEOMETRY + FRAME if k in el}
+    out["from_place"] = el["id"] if is_place else el.get("from_place")
+    label = el.get("label") if is_place else el.get("place_label")
+    if label:
+        out["place_label"] = label
+    fit = "cover" if is_place else el.get("fit", "cover")
+    ref = {"file": media["id"]}
+    if media["kind"] == "video":
+        return {
+            **out,
+            "kind": "video",
+            "media": ref,
+            "poster": {"frame_s": 0},
+            "autoplay": None,
+            "crop": crop,
+            "fit": fit,
+        }
+    opacity = el.get("opacity", 1) if el.get("kind") == "photo" else 1
+    return {**out, "kind": "photo", "media": ref, "crop": crop, "fit": fit, "opacity": opacity}
+
+
+def _fill(args) -> int:
+    """Файл в место листа: чтение листа, замена в документе, запись по прочитанной ревизии."""
+    crop = crop_value(args.crop) if args.crop is not None else None
+    api = connect(args)
+    album = api.run("albums.get", path={"album_id": args.album}) or {}
+    page = next((p for p in album.get("pages", []) if p.get("id") == args.page), None)
+    if page is None:
+        raise ApiError(None, "not_found", f"В альбоме {args.album} нет листа {args.page}")
+    document = copy.deepcopy(page["document"])
+    elements = document.get("elements", [])
+    index = next((i for i, e in enumerate(elements) if e.get("id") == args.place), None)
+    el = elements[index] if index is not None else None
+    slot = el is not None and (
+        el.get("kind") in MEDIA_KINDS
+        or (el.get("kind") == "place" and el.get("role") in MEDIA_ROLES)
+    )
+    if not slot:
+        names = ", ".join(_slots(document)) or "нет"
+        raise usage(
+            f"На листе {args.page} нет места {args.place} под фото или видео; места: {names}"
+        )
+    media = api.run("library.get", path={"media_id": args.media}) or {}
+    kind = media.get("kind")
+    if el.get("kind") == "place" and el.get("role") in MEDIA_KINDS and el["role"] != kind:
+        raise usage(f"Место {args.place} — под {el['role']}, а файл {args.media} — {kind}")
+    if kind == "video" and _is_backdrop(el):
+        raise usage(f"Место {args.place} — фон листа: туда только фото")
+    if crop is None:
+        crop = (
+            default_crop(place_aspect(el, page.get("ratio") or (1, 1)), media.get("width"),
+                         media.get("height"))
+            if kind == "photo"
+            else dict(CENTER)
+        )  # fmt: skip
+    elements[index] = filled(el, {"id": args.media, "kind": kind}, crop)
+    body = {"revision": page["revision"], "document": document}
+    path = {"album_id": args.album, "page_id": args.page}
+    try:
+        written = api.run("pages.write", path=path, json=body) or {}
+    except ApiError as error:
+        hint = FILL_HINTS.get(error.code)
+        if hint and error.status is not None:
+            error.body = {**(error.body or {}), "hint": hint}
+        raise
+    return done(
+        {
+            "album_id": args.album,
+            "page_id": args.page,
+            "revision": written.get("revision"),
+            "place": args.place,
+            "media": args.media,
+            "kind": kind,
+            "crop": crop,
+        }
+    )
+
+
+FILL_HINTS = {
+    "revision_mismatch": "лист изменили между чтением и записью (кто и когда — в ответе): "
+    "посмотрите, не правил ли человек это место; если нет — повторите page fill, лист "
+    "перечитается",
+    "invalid_document": "лист не записан: исправьте причину из errors (файл не готов, в "
+    "корзине, не того вида) и повторите page fill",
+}
+
+
 def _delete(args) -> int:
     path = {"album_id": args.album, "page_id": args.page}
     return done(connect(args).run("pages.trash", path=path, confirm=args.confirm))
@@ -205,6 +372,7 @@ def _image(args) -> int:
                 raise
             waits += 1
             client.sleep(_retry_after(error))
+    saved = match_extension(saved)
     size = saved.get("x-albumum-image-size") or ""
     width, _, height = size.partition("x")
     return done(
@@ -229,28 +397,37 @@ def register(sub) -> None:
     pages = group(sub, "pages", "листы альбома")
 
     p = pages.add_parser("add", help="добавить лист: пустой, из заготовки, из файла или дубль")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
     p.add_argument("--template", metavar="ИМЯ", help="заготовка (catalog templates)")
     p.add_argument("--media", metavar="ID,…", help="файлы по местам заготовки; «-» — пусто")
     p.add_argument("--document", metavar="ФАЙЛ", help="готовая верстка из файла JSON")
     p.add_argument("--duplicate-of", type=int, metavar="ЛИСТ", help="копия листа")
     p.add_argument("--position", type=int, metavar="N", help="место в альбоме")
     add_request_id(p)
+    add_full(p, "листы с документами и файлы (assets)")
     p.set_defaults(handler=_add)
 
     p = pages.add_parser("trash", help="листы в корзину одним запросом")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("pages", type=int, nargs="+", metavar="ЛИСТ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument(
+        "pages", type=int, nargs="+", metavar="ЛИСТ", help="номера листов (pages[].id в album get)"
+    )
     add_confirm(p)
     p.set_defaults(handler=_trash)
 
     p = pages.add_parser("order", help="новый порядок листов")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("pages", type=int, nargs="+", metavar="ЛИСТ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument(
+        "pages",
+        type=int,
+        nargs="+",
+        metavar="ЛИСТ",
+        help="все листы альбома в новом порядке; титульная — первой или ее нет в списке",
+    )
     p.set_defaults(handler=_order)
 
     p = pages.add_parser("background", help="вернуть листам фон альбома")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
     p.add_argument("pages", type=int, nargs="*", metavar="ЛИСТ", help="по умолчанию — все свои")
     p.add_argument("--from", dest="source", required=True, metavar="ФАЙЛ", help="album get -o")
     add_confirm(p)
@@ -259,34 +436,50 @@ def register(sub) -> None:
     page = group(sub, "page", "один лист альбома")
 
     p = page.add_parser("get", help="лист в файл: ревизия и документ верстки")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("page", type=int, metavar="ЛИСТ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
     p.add_argument("-o", "--output", required=True, metavar="ФАЙЛ")
     p.set_defaults(handler=_get)
 
     p = page.add_parser("put", help="записать лист из файла (ревизия — из файла)")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("page", type=int, metavar="ЛИСТ")
-    p.add_argument("file", metavar="ФАЙЛ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
+    p.add_argument("file", metavar="ФАЙЛ", help="файл листа из page get -o")
     p.set_defaults(handler=_put)
 
     p = page.add_parser("template", help="применить заготовку к листу")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("page", type=int, metavar="ЛИСТ")
-    p.add_argument("name", metavar="ИМЯ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
+    p.add_argument("name", metavar="ИМЯ", help="имя заготовки (catalog templates)")
     p.add_argument("--from", dest="source", required=True, metavar="ФАЙЛ", help="page get -o")
     p.add_argument("--media", metavar="ID,…", help="файлы по местам заготовки; «-» — пусто")
     p.set_defaults(handler=_template)
 
+    p = page.add_parser(
+        "fill",
+        help="поставить файл в место листа: чтение листа, замена, запись по ревизии",
+    )
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
+    p.add_argument("--place", required=True, metavar="ID", help="id места или элемента в листе")
+    p.add_argument("--media", required=True, type=int, metavar="N", help="номер файла библиотеки")
+    p.add_argument(
+        "--crop",
+        metavar="КАДР",
+        help="dx=Ч,dy=Ч,scale=Ч (или dx,dy[,scale]); без него — по умолчанию: вертикальное фото "
+        "к верхней трети, прочее по центру",
+    )
+    p.set_defaults(handler=_fill)
+
     p = page.add_parser("delete", help="лист в корзину")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("page", type=int, metavar="ЛИСТ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
     add_confirm(p)
     p.set_defaults(handler=_delete)
 
     p = page.add_parser("image", help="изображение сохраненного листа — в файл")
-    p.add_argument("album", type=int, metavar="АЛЬБОМ")
-    p.add_argument("page", type=int, metavar="ЛИСТ")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
     p.add_argument("--width", type=int, default=1280, metavar="ПИКС")
     p.add_argument("--format", choices=["jpeg", "png"], default="jpeg")
     p.add_argument("-o", "--output", required=True, metavar="ФАЙЛ")

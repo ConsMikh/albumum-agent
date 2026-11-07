@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from albumum_cli import upload
 from albumum_cli.client import ApiError
-from albumum_cli.commands import add_confirm, connect, done, group
+from albumum_cli.commands import add_confirm, connect, done, group, match_extension
 from albumum_cli.output import emit
 
 
@@ -64,13 +64,16 @@ def _rendition_id(url: str) -> int:
 
 
 def _image(args) -> int:
-    """Показ-версия не шире `--width` (если такой нет — самая узкая)."""
+    """Показ-версия не шире `--width` (если такой нет — самая узкая); у видео — обложка.
+    Расширение `-o` приводится к формату ответа (WebP — `.webp`)."""
     api = connect(args)
     card = api.run("library.get", path={"media_id": args.id}) or {}
     srcset = sorted(card.get("srcset") or [], key=lambda item: item["width"])
     if not srcset:
         raise ApiError(
-            None, "no_rendition", f"У файла {args.id} нет показ-версий (видео или еще в обработке)"
+            None,
+            "no_rendition",
+            f"У файла {args.id} нет показ-версий: еще в обработке или обработка не удалась",
         )
     fitting = [item for item in srcset if item["width"] <= args.width]
     chosen = fitting[-1] if fitting else srcset[0]
@@ -79,7 +82,7 @@ def _image(args) -> int:
         path={"rendition_id": _rendition_id(chosen["url"])},
         save_to=Path(args.output),
     )
-    return done({**saved, "width": chosen["width"]})
+    return done({**match_extension(saved), "width": chosen["width"]})
 
 
 def _original(args) -> int:
@@ -126,44 +129,53 @@ def register(sub) -> None:
     p.set_defaults(handler=_list)
 
     p = lib.add_parser("get", help="карточка файла")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер файла библиотеки (library list)")
     p.set_defaults(handler=_get)
 
     p = lib.add_parser("upload", help="загрузить файлы и папки: предпроверка, дубли пропускаются")
-    p.add_argument("paths", nargs="+", metavar="ПУТЬ")
+    p.add_argument(
+        "paths", nargs="+", metavar="ПУТЬ", help="файлы и папки; папки — рекурсивно, скрытые — мимо"
+    )
     p.add_argument("--folder", type=int, metavar="ID", help="каталог назначения")
     p.set_defaults(handler=_upload)
 
-    p = lib.add_parser("image", help="показ-версия фото не шире --width — в файл")
-    p.add_argument("id", type=int, metavar="ID")
+    p = lib.add_parser(
+        "image", help="показ-версия фото (у видео — обложка) не шире --width — в файл"
+    )
+    p.add_argument("id", type=int, metavar="ID", help="номер файла библиотеки (library list)")
     p.add_argument("--width", type=int, default=960, metavar="ПИКС")
     p.add_argument("-o", "--output", required=True, metavar="ФАЙЛ")
     p.set_defaults(handler=_image)
 
     p = lib.add_parser("original", help="оригинал файла — в файл")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер файла библиотеки (library list)")
     p.add_argument("-o", "--output", required=True, metavar="ФАЙЛ")
     p.set_defaults(handler=_original)
 
     p = lib.add_parser("trash", help="файлы в корзину")
-    p.add_argument("ids", type=int, nargs="+", metavar="ID")
+    p.add_argument("ids", type=int, nargs="+", metavar="ID", help="номера файлов библиотеки")
     add_confirm(p)
     p.set_defaults(handler=_trash)
 
     p = lib.add_parser("move", help="переложить файлы в каталог")
-    p.add_argument("ids", type=int, nargs="+", metavar="ID")
+    p.add_argument("ids", type=int, nargs="+", metavar="ID", help="номера файлов библиотеки")
     p.add_argument("--folder", required=True, metavar="ID|none", help="каталог или none")
     add_confirm(p)
     p.set_defaults(handler=_move)
 
     p = lib.add_parser("taken-at", help="задать дату съемки")
-    p.add_argument("ids", type=int, nargs="+", metavar="ID")
-    p.add_argument("--at", required=True, metavar="ДАТА", help="ГГГГ-ММ-ДДTЧЧ:ММ")
+    p.add_argument("ids", type=int, nargs="+", metavar="ID", help="номера файлов библиотеки")
+    p.add_argument(
+        "--at",
+        required=True,
+        metavar="ДАТА",
+        help="ГГГГ-ММ-ДДTЧЧ:ММ — в поясе автора (tz в library usage) или со смещением (+05:00, Z)",
+    )
     add_confirm(p)
     p.set_defaults(handler=_taken_at)
 
     lib.add_parser("usage", help="занятый объем и лимиты").set_defaults(handler=_usage)
 
     p = lib.add_parser("used-in", help="где стоят файлы")
-    p.add_argument("ids", type=int, nargs="+", metavar="ID")
+    p.add_argument("ids", type=int, nargs="+", metavar="ID", help="номера файлов библиотеки")
     p.set_defaults(handler=_used_in)

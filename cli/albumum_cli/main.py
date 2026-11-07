@@ -1,4 +1,9 @@
-"""Точка входа утилиты albumum. Результат и ошибки — JSON в stdout, сообщения — в stderr."""
+"""Точка входа утилиты albumum. Результат и ошибки — JSON в stdout, сообщения — в stderr.
+
+Коды выхода (output.py): 0 — готово; 1 — ошибка; 2 — нужно действие (подтверждение, конфликт
+ревизии, ошибки документа); 3 — ключ или права; 4 — темп исчерпан; 5 — контракт не совпал;
+6 — частично: главное сделано, часть элементов отклонена (library upload с rejected при
+загруженных или уже имевшихся файлах)."""
 
 import argparse
 import sys
@@ -13,6 +18,7 @@ from albumum_cli.output import (
     EXIT_CONTRACT,
     EXIT_ERROR,
     EXIT_OK,
+    EXIT_PARTIAL,
     EXIT_RATE,
     emit,
     fail,
@@ -25,6 +31,7 @@ __all__ = [
     "EXIT_CONTRACT",
     "EXIT_ERROR",
     "EXIT_OK",
+    "EXIT_PARTIAL",
     "EXIT_RATE",
     "build_parser",
     "main",

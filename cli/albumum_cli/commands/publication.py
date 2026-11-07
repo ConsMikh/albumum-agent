@@ -50,7 +50,7 @@ def _album(args) -> int:
 
 
 def _with_album(parser, *, confirm: bool = False):
-    parser.add_argument("album", type=int, metavar="ID")
+    parser.add_argument("album", type=int, metavar="ID", help="номер альбома (albums list)")
     if confirm:
         add_confirm(parser)
     return parser

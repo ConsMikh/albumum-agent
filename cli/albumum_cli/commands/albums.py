@@ -4,6 +4,7 @@ import re
 
 from albumum_cli.commands import (
     add_confirm,
+    add_full,
     add_request_id,
     connect,
     done,
@@ -38,8 +39,35 @@ def page_format(api, text: str) -> tuple[int, int]:
     )
 
 
+def publication_brief(album: dict) -> dict:
+    """Публикация кратко: опубликован ли, есть ли пароль, отстает ли от правок. Адреса для
+    зрителей агент не получает."""
+    pub = album.get("publication")
+    if not isinstance(pub, dict) or pub.get("published") is False:
+        return {"published": False, "has_password": False, "behind": False}
+    return {
+        "published": True,
+        "has_password": bool(pub.get("has_password")),
+        "behind": bool(pub.get("behind")),
+    }
+
+
+def album_brief(album: dict) -> dict:
+    """Строка альбома в кратком списке: номер, название, дата, число листов, публикация."""
+    return {
+        "id": album.get("id"),
+        "title": album.get("title"),
+        "event_date": album.get("event_date"),
+        "page_count": album.get("page_count"),
+        **publication_brief(album),
+    }
+
+
 def _list(args) -> int:
-    return done(connect(args).run("albums.list"))
+    answer = connect(args).run("albums.list") or {}
+    if args.full:
+        return done(answer)
+    return done({"items": [album_brief(a) for a in answer.get("items", [])]})
 
 
 def _create(args) -> int:
@@ -86,7 +114,27 @@ def _set(args) -> int:
     if args.confirm:
         body["confirm_format"] = True  # «да» человека на смену формата, затрагивающую страницы
     path = {"album_id": args.id}
-    return done(api.run("albums.update", path=path, json=body, confirm=args.confirm))
+    album = api.run("albums.update", path=path, json=body, confirm=args.confirm) or {}
+    if args.full:
+        return done(album)
+    changed = [CHANGED.get(field, field) for field in body if field != "confirm_format"]
+    return done(
+        {
+            "album_id": album.get("id", args.id),
+            "changed": list(dict.fromkeys(changed)),
+            "title": album.get("title"),
+            "event_date": album.get("event_date"),
+            "page_w": album.get("page_w"),
+            "page_h": album.get("page_h"),
+            "sheet": album.get("sheet"),
+            "page_count": album.get("page_count"),
+            "updated_at": album.get("updated_at"),
+        }
+    )
+
+
+# Поле тела -> что изменилось в кратком итоге `album set`.
+CHANGED = {"event_date": "date", "page_w": "format", "page_h": "format"}
 
 
 def _format_check(args) -> int:
@@ -103,7 +151,11 @@ def _delete(args) -> int:
 
 def register(sub) -> None:
     albums = group(sub, "albums", "альбомы")
-    albums.add_parser("list", help="альбомы автора").set_defaults(handler=_list)
+    p = albums.add_parser(
+        "list", help="альбомы автора: номер, название, дата, число листов, публикация"
+    )
+    add_full(p, "формат, описание, обложка, даты публикации")
+    p.set_defaults(handler=_list)
 
     album = group(sub, "album", "один альбом")
 
@@ -127,12 +179,12 @@ def register(sub) -> None:
     p.set_defaults(handler=_create)
 
     p = album.add_parser("get", help="альбом целиком: свойства, стиль, листы и их ревизии")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")
     p.add_argument("-o", "--output", metavar="ФАЙЛ", help="записать в файл, а не в stdout")
     p.set_defaults(handler=_get)
 
     p = album.add_parser("set", help="изменить свойства, стиль или формат")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")
     p.add_argument("--title", metavar="НАЗВАНИЕ")
     p.add_argument("--date", metavar="ГГГГ-ММ-ДД")
     p.add_argument("--description", metavar="ТЕКСТ")
@@ -140,15 +192,16 @@ def register(sub) -> None:
     p.add_argument("--sheet", choices=SHEETS)
     p.add_argument("--style", metavar="ФАЙЛ", help="стиль альбома из файла JSON")
     add_confirm(p)
+    add_full(p, "альбом целиком — стиль, листы с документами")
     p.set_defaults(handler=_set)
 
     p = album.add_parser("format-check", help="какие листы затронет смена формата")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")
     p.add_argument("--format", required=True, metavar="ФОРМАТ", help=FORMAT_HELP)
     p.add_argument("--sheet", required=True, choices=SHEETS)
     p.set_defaults(handler=_format_check)
 
     p = album.add_parser("delete", help="альбом в корзину (только с подтверждением)")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")
     add_confirm(p)
     p.set_defaults(handler=_delete)

@@ -11,7 +11,8 @@ description: Используй, когда нужно создать альбо
 ## Альбом
 
 ```sh
-albumum albums list                     # альбомы автора: номер, название, формат, публикация
+albumum albums list                     # кратко: номер, название, дата, число листов, публикация
+albumum albums list --full              # полностью: формат, описание, обложка, даты публикации
 albumum catalog formats                 # форматы: стороны страницы и вид листа
 albumum album create --title "Эльбрус" --date 2026-07-03 --format 3:2 --sheet spread
 albumum album create --title "Дача" --date 2026-08-15 --format square --sheet single
@@ -35,6 +36,8 @@ albumum album get 7 -o album.json       # альбом целиком: свой�
   `album create`: смена потом затронет листы.
 - Оборвалась связь на `album create` — повтори с `--request-id` из ответа (скилл `albumum`, «Повтор без
   дублей»), иначе получишь второй альбом.
+- `albums list` кратко: `published` — опубликован ли, `has_password` — есть ли пароль, `behind` — есть
+  правки после публикации. Адреса для зрителей система агенту не отдает (скилл `albumum-publish`).
 - Дальше работай с файлом `album.json`: в нем номера листов (`pages[].id`), их вид (`kind`), ревизии и
   документы. Перечитывай его после изменений.
 
@@ -48,6 +51,8 @@ albumum catalog fonts                                             # шрифты
 albumum album set 7 --style style.json
 ```
 
+- `album set` отвечает кратко: номер альбома, `changed` — что изменилось, свойства и число листов
+  (`page_count`); весь альбом — с `--full` или `album get`.
 - **Смена формата**, затрагивающая листы, — код 2 с `preview`: перечень листов и что с ними будет
   (разворот режется по сгибу, элемент через сгиб уходит на одну половину). Сначала `album format-check`,
   покажи перечень человеку, «Применить? (да / нет)», после «да» — та же команда с `--confirm`.
@@ -60,16 +65,27 @@ albumum album set 7 --style style.json
 ## Листы
 
 ```sh
-albumum catalog templates 7                        # заготовки листа этого альбома: имя, число мест
-albumum catalog templates 7 --kind title           # заготовки титульной (для page template)
+albumum catalog templates 7                        # заготовки листа: имя, название, число мест
+albumum catalog templates 7 --places 2             # только на 2 места под фото
+albumum catalog templates 7 --kind title           # для титульной (for_title: true — сделаны для нее)
+albumum catalog templates 7 --full                 # с документом заготовки (места, их id и подписи)
 albumum pages add 7 --template ИМЯ --media 501,502,-,503   # лист из заготовки; «-» — место пустое
 albumum pages add 7 --document page.json --position 3      # лист сразу с версткой (albumum-layout)
-albumum pages add 7 --duplicate-of 41              # копия листа
+albumum pages add 7 --duplicate-of 41              # копия листа — встает сразу за оригиналом
 albumum pages add 7                                # пустой лист в конец
 albumum pages order 7 40 42 41 43                  # новый порядок: все листы альбома
+albumum pages order 7 39 40 42 41 43               # то же с титульной (39) первой — тоже можно
 albumum page template 7 41 ИМЯ --from page-41.json --media 501,-,502   # заменить верстку листа заготовкой
 ```
 
+- `pages add` отвечает кратко: номер альбома, `added` — сколько листов добавлено, `pages` — их `id`,
+  `kind`, `position`, `revision`; листы с документами и файлами — `--full`.
+- Вертикальное фото, которое место обрезает по высоте, система ставит кадром к верхней трети (там
+  обычно лица), остальные — по центру. Поправить кадр одного места — `albumum page fill` с `--crop`
+  (скилл `albumum-layout`).
+- `pages order`: перечисли все листы альбома по одному разу; титульная всегда первая — ее можно не
+  указывать или поставить первой. Не совпало — код 1 с `missing` (каких листов не хватает) и `extra`
+  (лишние: повторы, титульная не первой); поправь список и повтори.
 - Файлы `--media` встают по местам заготовки по порядку; не хватило мест — добавится столько листов
   той же заготовки, сколько нужно (100 фото по заготовке на 4 места — 25 листов одной командой).
   Файл должен быть готов (`status: ready`) и нужного вида.

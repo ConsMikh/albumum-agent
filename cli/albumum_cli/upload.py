@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from albumum_cli.client import ApiClient, ApiError, exit_code
-from albumum_cli.output import EXIT_ERROR, EXIT_OK, note
+from albumum_cli.output import EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, note
 
 BATCH = 200  # файлов в одной предпроверке
 _CHUNK = 1 << 20
@@ -72,6 +72,36 @@ def _unreadable(path: Path, exc: OSError) -> dict:
     }
 
 
+# Заведомо не снимки и не видео: сайдкары камер и редакторов, служебные файлы систем, документы и
+# архивы. Формат прочих файлов система определяет по содержимому, поэтому белого списка нет.
+NOT_MEDIA = frozenset(
+    {
+        # сайдкары и миниатюры камер, телефонов, редакторов
+        ".aae", ".xmp", ".thm", ".lrv", ".dop", ".pp3", ".xml", ".json",
+        # служебные файлы систем и загрузок
+        ".ini", ".db", ".ds_store", ".lnk", ".url", ".tmp", ".part", ".crdownload", ".log",
+        # документы, страницы, архивы, программы
+        ".txt", ".md", ".csv", ".pdf", ".doc", ".docx", ".html", ".htm",
+        ".zip", ".rar", ".7z", ".exe",
+    }
+)  # fmt: skip
+
+
+def not_media(path: Path) -> bool:
+    """Файл, который система заведомо не примет: расширение из NOT_MEDIA, `.DS_Store` или
+    двойник AppleDouble («._IMG_0001.JPG» с macOS)."""
+    name = path.name.lower()
+    return name.startswith("._") or name == ".ds_store" or path.suffix.lower() in NOT_MEDIA
+
+
+def _unsupported(path: Path) -> dict:
+    if path.name.startswith("._") or path.name.lower() == ".ds_store":
+        reason = "Служебный файл macOS, не снимок и не видео"
+    else:
+        reason = f"Формат не поддерживается: {path.suffix.lower() or path.name}"
+    return {"file": str(path), "code": "unsupported", "reason": reason}
+
+
 def _rejected(path: Path, error: ApiError) -> dict:
     item = {"file": str(path), "code": error.code, "reason": error.reason}
     if error.code == "network_error":
@@ -96,11 +126,17 @@ class _Abort(Exception):
 def run(client: ApiClient, files: list[Path], folder_id: int | None) -> dict:
     """Предпроверка пачками по BATCH, загрузка новых по одному. Отчет:
     `{uploaded: [{file, id, kind, status}], skipped: [{file, status, media_id, reason}],
-    rejected: [{file, code, reason}]}`; прервано (ключ, темп, контракт, сбой предпроверки) —
+    rejected: [{file, code, reason}], ignored: [{file, code, reason}]}` (ignored — не медиа,
+    на код выхода не влияют); прервано (ключ, темп, контракт, сбой предпроверки) —
     еще `aborted: {code, reason, status, exit_code}` и `not_attempted: [файл…]`."""
     if folder_id is not None:
         _check_folder(client, folder_id)
-    report: dict = {"uploaded": [], "skipped": [], "rejected": []}
+    report: dict = {"uploaded": [], "skipped": [], "rejected": [], "ignored": []}
+    # Заведомо не медиа (.txt, .AAE, .xmp рядом со снимками) — в отчет без запросов в сеть и без
+    # влияния на код выхода: такие файлы обычны в папке со снимками. Прочее решает система.
+    foreign = {p for p in files if not_media(p)}
+    report["ignored"].extend(_unsupported(p) for p in files if p in foreign)
+    files = [p for p in files if p not in foreign]
     try:
         for start in range(0, len(files), BATCH):
             _batch(client, files[start : start + BATCH], files[start:], folder_id, report)
@@ -117,10 +153,16 @@ def run(client: ApiClient, files: list[Path], folder_id: int | None) -> dict:
 
 
 def report_exit(report: dict) -> int:
-    """Код выхода по отчету: прервано — код прервавшей ошибки, есть отклоненные — 1."""
+    """Код выхода по отчету: прервано — код прервавшей ошибки; есть отклоненные — 6 (частично),
+    если остальные загружены или уже были в библиотеке, и 1, если не прошел ни один файл."""
     if "aborted" in report:
         return report["aborted"]["exit_code"]
-    return EXIT_ERROR if report["rejected"] else EXIT_OK
+    if not report["rejected"]:
+        # Ни одного медиафайла (только сайдкары) — не «готово», а ошибка: загружать было нечего.
+        if report["ignored"] and not (report["uploaded"] or report["skipped"]):
+            return EXIT_ERROR
+        return EXIT_OK
+    return EXIT_PARTIAL if report["uploaded"] or report["skipped"] else EXIT_ERROR
 
 
 def _batch(client, batch: list[Path], rest: list[Path], folder_id, report: dict) -> None:

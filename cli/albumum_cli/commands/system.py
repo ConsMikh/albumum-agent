@@ -243,5 +243,5 @@ def register(sub) -> None:
         dest="config_command", required=True
     )
     set_url = cfg.add_parser("set-url", help="сохранить адрес системы")
-    set_url.add_argument("address", metavar="url")
+    set_url.add_argument("address", metavar="url", help="адрес системы: https://…")
     set_url.set_defaults(handler=_set_url)

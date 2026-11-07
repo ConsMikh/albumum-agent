@@ -8,7 +8,7 @@ from pathlib import Path
 
 from albumum_cli import config
 from albumum_cli.client import ApiClient, ApiError
-from albumum_cli.output import EXIT_OK, emit
+from albumum_cli.output import EXIT_OK, emit, note
 
 COVERED: dict[str, str] = {
     "me.get": "whoami",
@@ -72,6 +72,7 @@ def register(sub) -> None:
     from albumum_cli.commands import (
         albums,
         catalog,
+        examples,
         folders,
         library,
         pages,
@@ -90,6 +91,7 @@ def register(sub) -> None:
     pages.register(sub)
     publication.register(sub)
     raw.register(sub)
+    examples.attach(sub)
 
 
 def group(sub, name: str, help_text: str):
@@ -110,8 +112,9 @@ def done(result) -> int:
 
 
 def read_json(path: str):
+    """JSON из файла; метка порядка байтов (BOM) в начале допустима: так пишет PowerShell 5.1."""
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = Path(path).read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise ApiError(None, "invalid_input", f"Не удалось прочитать {path}: {exc}") from None
     try:
@@ -134,6 +137,38 @@ def write_json(path: str, data) -> str:
         partial.unlink(missing_ok=True)
         raise ApiError(None, "write_failed", f"Не удалось записать {target}: {exc}") from None
     return str(target)
+
+
+# Расширения файла по формату ответа: первое — то, на которое меняется неверное.
+EXTENSIONS = {
+    "image/jpeg": (".jpg", ".jpeg"),
+    "image/png": (".png",),
+    "image/webp": (".webp",),
+    "image/avif": (".avif",),
+}
+
+
+def match_extension(saved: dict) -> dict:
+    """Расширение записанного файла — по формату ответа (`content_type`): `175.jpg` с WebP внутри
+    становится `175.webp`. В ответе — фактический путь, предупреждение — в stderr."""
+    ctype = str(saved.get("content_type") or "").split(";")[0].strip().lower()
+    good = EXTENSIONS.get(ctype)
+    path = Path(saved["file"])
+    if not good or path.suffix.lower() in good:
+        return saved
+    target = (
+        path.with_name(path.stem + good[0]) if path.suffix else path.with_name(path.name + good[0])
+    )
+    existed = target.exists()
+    try:
+        os.replace(path, target)
+    except OSError as exc:
+        raise ApiError(None, "write_failed", f"Не удалось переименовать {path}: {exc}") from None
+    message = f"Предупреждение: формат ответа {ctype}, файл записан как {target}, а не {path}"
+    if existed:
+        message += f"; прежний {target} перезаписан"
+    note(message)
+    return {**saved, "file": str(target)}
 
 
 def id_list(text: str) -> list[int | None]:
@@ -162,6 +197,10 @@ def add_confirm(parser) -> None:
         metavar="ЖЕТОН",
         help="жетон из предпросмотра — только после явного «да» человека",
     )
+
+
+def add_full(parser, what: str) -> None:
+    parser.add_argument("--full", action="store_true", help=f"полный ответ системы: {what}")
 
 
 def add_request_id(parser) -> None:

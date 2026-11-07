@@ -38,10 +38,20 @@ def register(sub) -> None:
     trash.add_parser("list", help="содержимое корзины").set_defaults(handler=_list)
 
     p = trash.add_parser("restore", help="вернуть из корзины")
-    p.add_argument("refs", nargs="+", metavar="ТИП:ID")
+    p.add_argument(
+        "refs",
+        nargs="+",
+        metavar="ТИП:ID",
+        help="объекты: media:ID, page:ID, album:ID (из trash list)",
+    )
     p.set_defaults(handler=_restore)
 
     p = trash.add_parser("purge", help="удалить из корзины навсегда (только с подтверждением)")
-    p.add_argument("refs", nargs="+", metavar="ТИП:ID")
+    p.add_argument(
+        "refs",
+        nargs="+",
+        metavar="ТИП:ID",
+        help="объекты: media:ID, page:ID, album:ID (из trash list)",
+    )
     add_confirm(p)
     p.set_defaults(handler=_purge)

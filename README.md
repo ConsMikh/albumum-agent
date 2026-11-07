@@ -79,10 +79,11 @@ albumum whoami
 | Библиотека | `albumum library list / get / upload / image / original / trash / move / taken-at / usage / used-in`, `folders list / create / rename / delete` |
 | Корзина | `albumum trash list / restore / purge` |
 | Альбомы | `albumum albums list`, `album create / get / set / format-check / delete`, `catalog fonts / templates / formats` |
-| Листы | `albumum pages add / trash / order / background`, `page get / put / template / delete / image` |
+| Листы | `albumum pages add / trash / order / background`, `page get / put / fill / template / delete / image` |
 | Публикация | `albumum publication status / publish / revoke / withdraw / album`, `publication password set / clear` |
 
-Справка по любой команде — `--help`. Команда из перечня подтверждений без `--confirm` печатает
+Справка по любой команде — `--help` (у основных команд — с примерами). `albums list`, `album set`, `pages add`, `catalog templates`
+по умолчанию отвечают кратко, полный ответ — `--full`. Файлы JSON принимаются и с BOM (PowerShell 5.1). Команда из перечня подтверждений без `--confirm` печатает
 предпросмотр с жетоном и выходит с кодом 2; с `--confirm ЖЕТОН` — выполняет. Создающие команды при
 обрыве связи печатают `request_id`: повтор с `--request-id` не создаст дубль. Пароль альбома — скрытым
 вводом или строкой stdin.
@@ -109,11 +110,12 @@ albumum whoami
 | Код | Значение |
 |---|---|
 | 0 | готово |
-| 1 | прочая ошибка (нет адреса, нет связи, неверные аргументы `usage`, непонятный ответ) |
+| 1 | прочая ошибка (нет адреса, нет связи, неверные аргументы `usage`, непонятный ответ; `library upload`, где не прошел ни один файл) |
 | 2 | нужно действие: подтверждение человека (428, `confirmation_*`), конфликт ревизии, `unfilled_places`, `format_affects_pages`, `idempotency_*`, ошибки документа `invalid_document` |
 | 3 | ключ или права: 401, 403 (`forbidden_operation`, в том числе отказ самой утилиты до сети), 400 `ambiguous_auth` (ключ вместе со входом), `no_key`, `url_mismatch`, `key_malformed` (в ключе лишние символы вставки — заново `albumum init`) |
 | 4 | темп исчерпан после трех ожиданий `Retry-After` (429) |
 | 5 | контракт системы не совпал: изменяющие команды не выполняются — `albumum update` |
+| 6 | частично: главное сделано, часть элементов отклонена — `library upload` загрузил файлы (или они уже были), но часть в `rejected` |
 
 ## Выпуск
 

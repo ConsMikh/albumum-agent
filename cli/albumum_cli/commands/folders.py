@@ -26,15 +26,15 @@ def register(sub) -> None:
     folders.add_parser("list", help="каталоги и число файлов").set_defaults(handler=_list)
 
     p = folders.add_parser("create", help="создать каталог")
-    p.add_argument("name", metavar="ИМЯ")
+    p.add_argument("name", metavar="ИМЯ", help="название каталога")
     p.set_defaults(handler=_create)
 
     p = folders.add_parser("rename", help="переименовать каталог")
-    p.add_argument("id", type=int, metavar="ID")
-    p.add_argument("name", metavar="ИМЯ")
+    p.add_argument("id", type=int, metavar="ID", help="номер каталога (folders list)")
+    p.add_argument("name", metavar="ИМЯ", help="название каталога")
     p.set_defaults(handler=_rename)
 
     p = folders.add_parser("delete", help="удалить каталог (файлы остаются в библиотеке)")
-    p.add_argument("id", type=int, metavar="ID")
+    p.add_argument("id", type=int, metavar="ID", help="номер каталога (folders list)")
     add_confirm(p)
     p.set_defaults(handler=_delete)

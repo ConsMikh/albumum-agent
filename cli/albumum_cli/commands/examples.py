@@ -1,0 +1,69 @@
+"""Примеры в справке основных команд (`--help`, раздел после флагов). Каждая строка — команда,
+которую разбирает утилита (проверяет tests/test_help.py)."""
+
+import argparse
+
+EXAMPLES: dict[str, str] = {
+    "library upload": """\
+albumum library upload ~/Фото/Эльбрус --folder 12
+albumum library upload IMG_0001.HEIC IMG_0002.MOV""",
+    "library list": """\
+albumum library list --from 2026-07-01 --to 2026-07-14 --all
+albumum library list --folder 12 --kind photo""",
+    "library image": """\
+albumum library image 501 --width 960 -o ~/albumum-work/501.webp""",
+    "library taken-at": """\
+albumum library taken-at 501 --at 2026-07-03T09:30          # в поясе автора (library usage, tz)
+albumum library taken-at 501 --at 2026-07-03T09:30+05:00    # со смещением""",
+    "albums list": """\
+albumum albums list
+albumum albums list --full""",
+    "album create": """\
+albumum album create --title "Эльбрус" --date 2026-07-03 --format 3:2 --sheet spread""",
+    "album get": """\
+albumum album get 7 -o ~/albumum-work/album.json""",
+    "album set": """\
+albumum album set 7 --title "Эльбрус, июль" --date 2026-07-03
+albumum album set 7 --style ~/albumum-work/style.json""",
+    "catalog templates": """\
+albumum catalog templates 7 --places 2
+albumum catalog templates 7 --kind title --full""",
+    "pages add": """\
+albumum pages add 7 --template two-side --media 501,502,-,503
+albumum pages add 7 --document ~/albumum-work/page.json --position 3
+albumum pages add 7 --duplicate-of 41""",
+    "pages order": """\
+albumum pages order 7 40 42 41 43        # все листы; титульную можно не указывать""",
+    "page get": """\
+albumum page get 7 41 -o ~/albumum-work/page-41.json""",
+    "page put": """\
+albumum page put 7 41 ~/albumum-work/page-41.json""",
+    "page fill": """\
+albumum page fill 7 41 --place p1 --media 501
+albumum page fill 7 41 --place p2 --media 502 --crop dx=0,dy=-0.4,scale=1.2""",
+    "page template": """\
+albumum page template 7 41 two-side --from ~/albumum-work/page-41.json --media 501,502""",
+    "page image": """\
+albumum page image 7 41 --width 800 -o ~/albumum-work/sheet-41.jpg""",
+    "publication status": """\
+albumum publication status 7""",
+    "publication publish": """\
+albumum publication publish 7                 # предпросмотр и confirm_token, код 2
+albumum publication publish 7 --confirm ЖЕТОН # только после явного «да» человека""",
+}
+
+
+def _find(sub: argparse._SubParsersAction, words: list[str]) -> argparse.ArgumentParser:
+    parser = sub.choices[words[0]]
+    for word in words[1:]:
+        nested = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        parser = nested.choices[word]
+    return parser
+
+
+def attach(sub: argparse._SubParsersAction) -> None:
+    """Примеры — в справку команд; переводы строк в них сохраняются."""
+    for command, text in EXAMPLES.items():
+        parser = _find(sub, command.split())
+        parser.epilog = "Примеры:\n" + "\n".join(f"  {line}" for line in text.splitlines())
+        parser.formatter_class = argparse.RawDescriptionHelpFormatter
