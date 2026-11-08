@@ -44,6 +44,7 @@ COVERED: dict[str, str] = {
     "albums.trash": "album delete",
     "catalog.templates": "catalog templates",
     "catalog.fonts": "catalog fonts",
+    "catalog.decorations": "catalog decorations",
     "catalog.formats": "catalog formats",
     # Страницы
     "pages.add": "pages add",

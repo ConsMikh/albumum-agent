@@ -3,8 +3,24 @@
 from albumum_cli.commands import add_full, connect, done, group
 
 
+def _live(answer: dict | None, args, kind: str | None = None) -> dict:
+    """Записи справочника без убранных (с --all — все) и, если задан kind, только этого вида."""
+    out = dict(answer or {})
+    items = out.get("items", [])
+    if not args.all:
+        items = [i for i in items if not i.get("removed")]
+    if kind:
+        items = [i for i in items if i.get("kind") == kind]
+    out["items"] = items
+    return out
+
+
 def _fonts(args) -> int:
-    return done(connect(args).run("catalog.fonts"))
+    return done(_live(connect(args).run("catalog.fonts"), args))
+
+
+def _decorations(args) -> int:
+    return done(_live(connect(args).run("catalog.decorations"), args, args.kind))
 
 
 def template_brief(item: dict, full: bool) -> dict:
@@ -36,8 +52,15 @@ def _formats(args) -> int:
 
 
 def register(sub) -> None:
-    catalog = group(sub, "catalog", "справочники: шрифты, заготовки, форматы")
-    catalog.add_parser("fonts", help="шрифты и стиль нового альбома").set_defaults(handler=_fonts)
+    catalog = group(sub, "catalog", "справочники: шрифты, украшения, заготовки, форматы")
+    p = catalog.add_parser("fonts", help="шрифты (с начертаниями faces)")
+    p.add_argument("--all", action="store_true", help="и убранные из набора (removed: true)")
+    p.set_defaults(handler=_fonts)
+
+    p = catalog.add_parser("decorations", help="рамки, стикеры и узоры набора")
+    p.add_argument("--kind", choices=["frame", "sticker", "pattern"], help="только этот вид")
+    p.add_argument("--all", action="store_true", help="и убранные из набора (removed: true)")
+    p.set_defaults(handler=_decorations)
 
     p = catalog.add_parser("templates", help="заготовки, подходящие листу альбома")
     p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")

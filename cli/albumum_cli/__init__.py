@@ -2,7 +2,7 @@
 
 # Версия набора: сборка зеркала подставляет сюда версию выпуска (scripts/build_agent_mirror.py);
 # в разработке — следующая версия с -dev.
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 # Номер контракта (/api/agent/contract.contract, /api/system/version.agent_contract),
 # который понимает утилита.

@@ -47,7 +47,7 @@ albumum album get 7 -o album.json       # альбом целиком: свой�
 albumum album set 7 --title "Эльбрус, июль" --date 2026-07-03 --description "Неделя в горах"
 albumum album format-check 7 --format 1000x1000 --sheet single   # какие листы затронет смена формата
 albumum album set 7 --format 1000x1000 --sheet single
-albumum catalog fonts                                             # шрифты и стиль нового альбома
+albumum catalog fonts                                             # шрифты с начертаниями (faces)
 albumum album set 7 --style style.json
 ```
 
@@ -56,7 +56,7 @@ albumum album set 7 --style style.json
 - **Смена формата**, затрагивающая листы, — код 2 с `preview`: перечень листов и что с ними будет
   (разворот режется по сгибу, элемент через сгиб уходит на одну половину). Сначала `album format-check`,
   покажи перечень человеку, «Применить? (да / нет)», после «да» — та же команда с `--confirm`.
-- **Стиль** — объект `style` из `album.json`: `font` (имя из `catalog fonts`), `text_color`, `palette`
+- **Стиль** — объект `style` из `album.json`: `font` (любое имя из `catalog fonts`, в том числе убранное из набора — оно остается рабочим), `text_color`, `palette`
   (ровно 4 цвета `#rrggbb`), `page_background` (фон альбома), `viewer_background` (фон вокруг листа у
   зрителя), `page_photo` (фото фона альбома: `{"media": {"file": ID}, "crop": …, "effects": …}` или
   `null`), `title_photo` (`true` — фото фона и на титульной, `false` — нет). Возьми `style` из файла альбома, поменяй нужное,
