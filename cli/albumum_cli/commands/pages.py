@@ -156,7 +156,8 @@ def _template(args) -> int:
 # Геометрия и рамка места переходят к заполнившему его элементу (как `_geometry` сервера,
 # albums/templates.py).
 GEOMETRY = ("id", "x", "y", "w", "h", "rotate", "z")
-FRAME = ("shape", "radius", "stroke", "effects")
+# Рамка места и рамка из набора (frame, frame_color — у фото и видео): заполнение их не меняет.
+FRAME = ("shape", "radius", "stroke", "effects", "frame", "frame_color")
 MEDIA_KINDS = ("photo", "video")
 MEDIA_ROLES = ("media", *MEDIA_KINDS)
 CENTER = {"scale": 1, "dx": 0, "dy": 0}
@@ -222,8 +223,8 @@ def _slots(document: dict) -> list[str]:
 
 
 def filled(el: dict, media: dict, crop: dict) -> dict:
-    """Элемент места с файлом `media`: геометрия, рамка и подпись места остаются, файл и кадр —
-    новые (как `_media_element` сервера)."""
+    """Элемент места с файлом `media`: геометрия, рамка (с рамкой из набора) и подпись места
+    остаются, файл и кадр — новые (как `_media_element` сервера)."""
     is_place = el.get("kind") == "place"
     out = {k: el[k] for k in GEOMETRY + FRAME if k in el}
     out["from_place"] = el["id"] if is_place else el.get("from_place")
