@@ -25,6 +25,9 @@ albumum album get 7 -o ~/albumum-work/album.json""",
     "album set": """\
 albumum album set 7 --title "Эльбрус, июль" --date 2026-07-03
 albumum album set 7 --style ~/albumum-work/style.json""",
+    "pages background-copy": """\
+albumum album get 7 -o ~/albumum-work/album.json
+albumum pages background-copy 7 175 --from ~/albumum-work/album.json""",
     "catalog templates": """\
 albumum catalog templates 7 --places 2
 albumum catalog templates 7 --kind title --full""",

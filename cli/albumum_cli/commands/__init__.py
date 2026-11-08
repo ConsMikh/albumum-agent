@@ -49,6 +49,7 @@ COVERED: dict[str, str] = {
     "pages.add": "pages add",
     "pages.order": "pages order",
     "pages.album_background": "pages background",
+    "pages.background_copy": "pages background-copy",
     "pages.write": "page put",
     "pages.template": "page template",
     "pages.trash": "page delete",

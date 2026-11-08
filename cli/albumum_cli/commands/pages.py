@@ -357,6 +357,43 @@ def _background(args) -> int:
     )
 
 
+def _background_copy(args) -> int:
+    """Фон листа `ЛИСТ` — на цели; листы, фон и ревизии — из файла `album get -o`, один запрос."""
+    album = read_json(args.source)
+    if not isinstance(album, dict) or album.get("id") != args.album:
+        raise usage(f"Файл {args.source} — не альбом {args.album} (albumum album get … -o)")
+    pages = {p["id"]: p for p in album.get("pages", [])}
+    missing = [i for i in [args.page, *args.targets] if i not in pages]
+    if missing:
+        raise usage(f"Листов {missing} нет в файле {args.source}")
+    document = pages[args.page].get("document") or {}
+    if not _own_background(document):
+        raise ApiError(
+            None,
+            "nothing_to_do",
+            f"У листа {args.page} фон альбома — копировать нечего",
+        )
+    targets = [i for i in args.targets or pages if i != args.page]
+    if not targets:
+        raise ApiError(None, "nothing_to_do", "В файле нет других листов, кроме источника")
+    body = {
+        "background": document["background"],
+        "pages": [{"id": i, "revision": pages[i]["revision"]} for i in targets],
+    }
+    try:
+        result = connect(args).run(
+            "pages.background_copy", path={"album_id": args.album}, json=body, confirm=args.confirm
+        )
+    except ApiError as error:
+        if error.code == "revision_mismatch" and error.status is not None:
+            error.body = {
+                **(error.body or {}),
+                "hint": "листы изменились — обновите файл `album get -o` и повторите",
+            }
+        raise
+    return done(result)
+
+
 def _image(args) -> int:
     """Изображение сохраненного листа; занято (503 render_busy) — ждет Retry-After, до трех раз."""
     api = connect(args)
@@ -432,6 +469,16 @@ def register(sub) -> None:
     p.add_argument("--from", dest="source", required=True, metavar="ФАЙЛ", help="album get -o")
     add_confirm(p)
     p.set_defaults(handler=_background)
+
+    p = pages.add_parser("background-copy", help="перенести фон листа на другие листы")
+    p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
+    p.add_argument("page", type=int, metavar="ЛИСТ", help="лист-источник фона")
+    p.add_argument(
+        "targets", type=int, nargs="*", metavar="ЦЕЛЬ", help="по умолчанию — все остальные листы"
+    )
+    p.add_argument("--from", dest="source", required=True, metavar="ФАЙЛ", help="album get -o")
+    add_confirm(p)
+    p.set_defaults(handler=_background_copy)
 
     page = group(sub, "page", "один лист альбома")
 
