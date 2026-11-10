@@ -10,6 +10,21 @@ albumum library upload IMG_0001.HEIC IMG_0002.MOV""",
     "library list": """\
 albumum library list --from 2026-07-01 --to 2026-07-14 --all
 albumum library list --folder 12 --kind photo""",
+    "library process": """\
+albumum library process 501 --aspect 1:1 --wait
+albumum library process 501 502 --flip h --rotate -1.5 --wait
+albumum library process 501 --crop 0.1,0.1,0.8,0.8""",
+    "library trim": """\
+albumum library trim 610 --start 12.4 --end 52.4 --wait""",
+    "library current": """\
+albumum library current 501 9012""",
+    "library version-trash": """\
+albumum library version-trash 9012
+albumum library version-trash 9012 9013 --confirm ЖЕТОН # только после явного «да» человека""",
+    "library version-file": """\
+albumum library version-file 9012 -o ~/albumum-work/501-v.jpg""",
+    "library poster": """\
+albumum library poster 9020 --at 12.5""",
     "library image": """\
 albumum library image 501 --width 960 -o ~/albumum-work/501.webp""",
     "library taken-at": """\

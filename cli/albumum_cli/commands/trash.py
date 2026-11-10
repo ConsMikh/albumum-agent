@@ -42,7 +42,7 @@ def register(sub) -> None:
         "refs",
         nargs="+",
         metavar="ТИП:ID",
-        help="объекты: media:ID, page:ID, album:ID (из trash list)",
+        help="объекты: media:ID, page:ID, album:ID, version:ID (из trash list)",
     )
     p.set_defaults(handler=_restore)
 
@@ -51,7 +51,7 @@ def register(sub) -> None:
         "refs",
         nargs="+",
         metavar="ТИП:ID",
-        help="объекты: media:ID, page:ID, album:ID (из trash list)",
+        help="объекты: media:ID, page:ID, album:ID, version:ID (из trash list)",
     )
     add_confirm(p)
     p.set_defaults(handler=_purge)

@@ -7,7 +7,6 @@
 import copy
 from pathlib import Path
 
-from albumum_cli import client
 from albumum_cli.client import ApiError
 from albumum_cli.commands import (
     add_confirm,
@@ -19,6 +18,7 @@ from albumum_cli.commands import (
     id_list,
     match_extension,
     read_json,
+    run_busy,
     usage,
     write_json,
 )
@@ -400,16 +400,9 @@ def _image(args) -> int:
     api = connect(args)
     params = {"width": str(args.width), "format": args.format}
     path = {"album_id": args.album, "page_id": args.page}
-    waits = 0
-    while True:
-        try:
-            saved = api.run("pages.image", path=path, params=params, save_to=Path(args.output))
-            break
-        except ApiError as error:
-            if error.code != RENDER_BUSY or waits >= client.RATE_WAITS:
-                raise
-            waits += 1
-            client.sleep(_retry_after(error))
+    saved = run_busy(
+        api, "pages.image", RENDER_BUSY, path=path, params=params, save_to=Path(args.output)
+    )
     saved = match_extension(saved)
     size = saved.get("x-albumum-image-size") or ""
     width, _, height = size.partition("x")
@@ -421,14 +414,6 @@ def _image(args) -> int:
             "height": int(height) if height.isdigit() else None,
         }
     )
-
-
-def _retry_after(error: ApiError) -> float:
-    try:
-        seconds = float((error.body or {}).get("retry_after"))
-    except (TypeError, ValueError):
-        seconds = 5.0
-    return max(0.0, min(seconds, client.MAX_WAIT_S))
 
 
 def register(sub) -> None:

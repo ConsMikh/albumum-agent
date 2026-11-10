@@ -1,12 +1,24 @@
 """Библиотека: список, карточка, загрузка, показ-версия, оригинал, корзина, каталог, дата."""
 
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from albumum_cli import upload
-from albumum_cli.client import ApiError
-from albumum_cli.commands import add_confirm, connect, done, group, match_extension
-from albumum_cli.output import emit
+from albumum_cli.client import ApiClient, ApiError, exit_code
+from albumum_cli.commands import (
+    add_confirm,
+    connect,
+    done,
+    group,
+    match_extension,
+    run_busy,
+    usage,
+)
+from albumum_cli.output import EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, emit
+
+POLL_S = 2  # как часто спрашивать, готова ли версия (--wait)
+WAIT_LIMIT_S = 300  # сколько ждать всего
 
 
 def folder_value(text: str) -> int | None:
@@ -33,6 +45,8 @@ def _list(args) -> int:
         folder_value(args.folder)
     if args.unused:
         params["used"] = "false"
+    if args.derived:
+        params["derived"] = "true"
     api = connect(args)
     page = api.run("library.list", params=params)
     if not args.all:
@@ -124,6 +138,7 @@ def register(sub) -> None:
     p.add_argument("--from", dest="date_from", metavar="ГГГГ-ММ-ДД", help="снято не раньше")
     p.add_argument("--to", dest="date_to", metavar="ГГГГ-ММ-ДД", help="снято не позже")
     p.add_argument("--unused", action="store_true", help="только не стоящие в альбомах")
+    p.add_argument("--derived", action="store_true", help="только файлы с версиями (обработанные)")
     p.add_argument("--limit", type=int, metavar="N", help="файлов на страницу ответа (до 200)")
     p.add_argument("--all", action="store_true", help="все страницы ответа подряд")
     p.set_defaults(handler=_list)
@@ -179,3 +194,237 @@ def register(sub) -> None:
     p = lib.add_parser("used-in", help="где стоят файлы")
     p.add_argument("ids", type=int, nargs="+", metavar="ID", help="номера файлов библиотеки")
     p.set_defaults(handler=_used_in)
+
+    register_versions(lib)
+
+
+def _crop_op(args) -> dict | None:
+    if args.crop and args.aspect:
+        raise usage("--crop и --aspect вместе не задаются: нужна либо рамка, либо пропорция")
+    if args.aspect:
+        return {"op": "crop", "aspect": args.aspect}
+    if not args.crop:
+        return None
+    parts = args.crop.split(",")
+    try:
+        x, y, w, h = (float(p) for p in parts)
+        if len(parts) != 4:
+            raise ValueError
+    except ValueError:
+        raise usage(f"--crop ждет четыре доли холста X,Y,W,H, получено: {args.crop}") from None
+    return {"op": "crop", "x": x, "y": y, "w": w, "h": h}
+
+
+def recipe(args) -> list[dict]:
+    """Рецепт фото из флагов — всегда в порядке отражение, поворот, обрезка, как бы ни шли флаги."""
+    flips = args.flip or []
+    if len(set(flips)) != len(flips):
+        raise usage("--flip: каждая ось (h, v) отражается один раз")
+    ops: list[dict] = [{"op": "flip", "axis": axis} for axis in sorted(flips)]
+    if args.rotate is not None:
+        ops.append({"op": "rotate", "angle": args.rotate})
+    crop = _crop_op(args)
+    if crop:
+        ops.append(crop)
+    if not ops:
+        raise usage("Нужна хотя бы одна операция: --flip, --rotate, --crop или --aspect")
+    return ops
+
+
+def _version_row(api: ApiClient, media_id: int, version: int) -> dict:
+    card = api.run("library.get", path={"media_id": media_id}) or {}
+    found = next((v for v in card.get("versions") or [] if v.get("id") == version), None)
+    if found is None:
+        return {"id": version, "status": "failed", "error": "Версия пропала из карточки"}
+    return found
+
+
+def _wait_all(api: ApiClient, items: list[dict], failed: list[dict]) -> None:
+    """Опрашивает все созданные версии вместе до `ready` или `failed`; общий предел — WAIT_LIMIT_S.
+    Не дождавшиеся остаются в `items` с `pending`; `failed` переезжают в `failed`."""
+    deadline = time.monotonic() + WAIT_LIMIT_S
+    waiting = [i for i in items if i.get("status") == "processing"]
+    while waiting:
+        for item in list(waiting):
+            try:
+                row = _version_row(api, item["media_id"], item["version"])
+            except ApiError as error:
+                if exit_code(error) != EXIT_ERROR:
+                    raise
+                items.remove(item)
+                waiting.remove(item)
+                failed.append(
+                    {
+                        "media_id": item["media_id"],
+                        "version": item["version"],
+                        "error": {"code": error.code, "reason": error.reason},
+                    }
+                )
+                continue
+            if row.get("status") == "ready":
+                item["status"] = "ready"
+            elif row.get("status") == "failed":
+                items.remove(item)
+                failed.append(
+                    {
+                        "media_id": item["media_id"],
+                        "version": item["version"],
+                        "error": {"code": "failed", "reason": row.get("error") or ""},
+                    }
+                )
+            else:
+                continue
+            waiting.remove(item)
+        if not waiting:
+            return
+        if time.monotonic() + POLL_S > deadline:
+            for item in waiting:
+                item["pending"] = True
+            return
+        time.sleep(POLL_S)
+
+
+def _create(api: ApiClient, ids: list[int], ops: list[dict], args) -> int:
+    items: list[dict] = []
+    failed: list[dict] = []
+    aborted = None
+    not_attempted: list[int] = []
+    for index, media_id in enumerate(ids):
+        body: dict = {"operations": ops}
+        if args.source is not None:
+            body["source"] = args.source
+        try:
+            made = api.run("library.version_create", path={"media_id": media_id}, json=body) or {}
+            items.append(
+                {"media_id": media_id, "version": made.get("id"), "status": made.get("status")}
+            )
+        except ApiError as error:
+            if exit_code(error) != EXIT_ERROR:  # ключ, темп, контракт: остальные не пробуем
+                aborted = {
+                    "code": error.code,
+                    "reason": error.reason,
+                    "status": error.status,
+                    "exit_code": exit_code(error),
+                }
+                not_attempted = ids[index:]
+                break
+            failed.append(
+                {
+                    "media_id": media_id,
+                    "error": {"code": error.code, "reason": error.reason, **error.details()},
+                }
+            )
+    if args.wait and aborted is None:
+        try:
+            _wait_all(api, items, failed)
+        except ApiError as error:
+            aborted = {
+                "code": error.code,
+                "reason": error.reason,
+                "status": error.status,
+                "exit_code": exit_code(error),
+            }
+    report: dict = {"items": items, "failed": failed}
+    if aborted:
+        report["aborted"] = aborted
+        report["not_attempted"] = not_attempted
+    emit(report)
+    if aborted:
+        return aborted["exit_code"]
+    if not failed and not any(i.get("pending") for i in items):
+        return EXIT_OK
+    return EXIT_PARTIAL if items else EXIT_ERROR
+
+
+def _process(args) -> int:
+    ops = recipe(args)
+    return _create(connect(args), args.ids, ops, args)
+
+
+def _trim(args) -> int:
+    ops = [{"op": "trim", "start": args.start, "end": args.end}]
+    return _create(connect(args), [args.id], ops, args)
+
+
+def _current(args) -> int:
+    body = {"version_id": args.version}
+    return done(connect(args).run("library.version_current", path={"media_id": args.id}, json=body))
+
+
+def _version_trash(args) -> int:
+    return done(
+        connect(args).run(
+            "library.version_trash", json={"ids": args.versions}, confirm=args.confirm
+        )
+    )
+
+
+def _version_file(args) -> int:
+    saved = connect(args).run(
+        "library.version_file", path={"version_id": args.version}, save_to=Path(args.output)
+    )
+    return done(match_extension(saved))
+
+
+POSTER_BUSY = "poster_busy"
+
+
+def _poster(args) -> int:
+    """Кадр-обложка; занято (503 poster_busy) — ждет Retry-After, до трех раз."""
+    body = {"frame_s": args.at}
+    path = {"version_id": args.version}
+    return done(run_busy(connect(args), "library.poster", POSTER_BUSY, path=path, json=body))
+
+
+def _add_wait(p) -> None:
+    p.add_argument(
+        "--source",
+        type=int,
+        metavar="ВЕРСИЯ",
+        help="от какой версии считать, если оригинала нет (по умолчанию — действующая)",
+    )
+    p.add_argument(
+        "--wait",
+        action="store_true",
+        help=f"ждать готовности версии (до {WAIT_LIMIT_S} с); без него версия готовится в фоне",
+    )
+
+
+def register_versions(lib) -> None:
+    p = lib.add_parser("process", help="новая версия фото по рецепту: отражение, поворот, обрезка")
+    p.add_argument("ids", type=int, nargs="+", metavar="ID", help="номера файлов (library list)")
+    p.add_argument(
+        "--flip", action="append", choices=["h", "v"], help="отразить по оси; можно дважды (h и v)"
+    )
+    p.add_argument("--rotate", type=float, metavar="ГРАДУСЫ", help="поворот по часовой, −180…180")
+    p.add_argument("--crop", metavar="X,Y,W,H", help="рамка долями повернутого холста (0…1)")
+    p.add_argument("--aspect", metavar="Ш:В", help="наибольшая рамка пропорции по центру: 3:2")
+    _add_wait(p)
+    p.set_defaults(handler=_process)
+
+    p = lib.add_parser("trim", help="фрагмент видео новой версией")
+    p.add_argument("id", type=int, metavar="ID", help="номер видеофайла (library list)")
+    p.add_argument("--start", type=float, required=True, metavar="С", help="начало, секунды")
+    p.add_argument("--end", type=float, required=True, metavar="С", help="конец, секунды")
+    _add_wait(p)
+    p.set_defaults(handler=_trim)
+
+    p = lib.add_parser("current", help="сделать версию действующей")
+    p.add_argument("id", type=int, metavar="ID", help="номер файла (library list)")
+    p.add_argument("version", type=int, metavar="ВЕРСИЯ", help="номер версии из library get")
+    p.set_defaults(handler=_current)
+
+    p = lib.add_parser("version-trash", help="версии в корзину версий (готовые; failed — насовсем)")
+    p.add_argument("versions", type=int, nargs="+", metavar="ВЕРСИЯ", help="номера версий")
+    add_confirm(p)
+    p.set_defaults(handler=_version_trash)
+
+    p = lib.add_parser("version-file", help="файл версии — в файл")
+    p.add_argument("version", type=int, metavar="ВЕРСИЯ", help="номер версии из library get")
+    p.add_argument("-o", "--output", required=True, metavar="ФАЙЛ")
+    p.set_defaults(handler=_version_file)
+
+    p = lib.add_parser("poster", help="кадр-обложка видеоверсии (строится один раз)")
+    p.add_argument("version", type=int, metavar="ВЕРСИЯ", help="номер версии видео из library get")
+    p.add_argument("--at", type=float, required=True, metavar="С", help="момент кадра, секунды")
+    p.set_defaults(handler=_poster)

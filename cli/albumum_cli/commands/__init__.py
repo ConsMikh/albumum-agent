@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from albumum_cli import config
+from albumum_cli import client, config
 from albumum_cli.client import ApiClient, ApiError
 from albumum_cli.output import EXIT_OK, emit, note
 
@@ -25,6 +25,11 @@ COVERED: dict[str, str] = {
     "library.trash": "library trash",
     "library.move": "library move",
     "library.taken_at": "library taken-at",
+    "library.version_create": "library process",
+    "library.version_current": "library current",
+    "library.version_trash": "library version-trash",
+    "library.version_file": "library version-file",
+    "library.poster": "library poster",
     "library.rendition": "library image",
     "library.original": "library original",
     "folders.list": "folders list",
@@ -67,7 +72,10 @@ COVERED: dict[str, str] = {
 
 # Операции без своей команды: журнал изменений и файлы опубликованной версии (адреса файлов
 # приходят в ответе `publication album`).
-SERVICE = {"system.changelog", "publication.file"}
+SERVICE = {
+    "system.changelog",
+    "publication.file",
+}
 
 
 def register(sub) -> None:
@@ -239,3 +247,25 @@ def connect(args) -> ApiClient:
             "ALBUMUM_URL; нужен другой адрес — попросите человека выполнить albumum init",
         )
     return ApiClient(cfg.url, cfg.token, transport=args.transport)
+
+
+def run_busy(api: ApiClient, op: str, busy_code: str, **kwargs):
+    """`api.run` с ожиданием занятости: 503 с кодом `busy_code` (render_busy, poster_busy) —
+    ждет Retry-After из ответа и повторяет, до `client.RATE_WAITS` раз."""
+    waits = 0
+    while True:
+        try:
+            return api.run(op, **kwargs)
+        except ApiError as error:
+            if error.code != busy_code or waits >= client.RATE_WAITS:
+                raise
+            waits += 1
+            client.sleep(_retry_after(error))
+
+
+def _retry_after(error: ApiError) -> float:
+    try:
+        seconds = float((error.body or {}).get("retry_after"))
+    except (TypeError, ValueError):
+        seconds = 5.0
+    return max(0.0, min(seconds, client.MAX_WAIT_S))
