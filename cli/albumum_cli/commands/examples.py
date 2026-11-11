@@ -6,10 +6,12 @@ import argparse
 EXAMPLES: dict[str, str] = {
     "library upload": """\
 albumum library upload ~/Фото/Эльбрус --folder 12
-albumum library upload IMG_0001.HEIC IMG_0002.MOV""",
+albumum library upload IMG_0001.HEIC IMG_0002.MOV
+albumum library upload --decoration рамка.png надпись.webp --wait   # свои украшения""",
     "library list": """\
 albumum library list --from 2026-07-01 --to 2026-07-14 --all
-albumum library list --folder 12 --kind photo""",
+albumum library list --folder 12 --kind photo
+albumum library list --kind decoration     # свои украшения; all — все виды""",
     "library process": """\
 albumum library process 501 --aspect 1:1 --wait
 albumum library process 501 502 --flip h --rotate -1.5 --wait
@@ -37,6 +39,9 @@ albumum albums list --full""",
 albumum album create --title "Эльбрус" --date 2026-07-03 --format 3:2 --sheet spread""",
     "album get": """\
 albumum album get 7 -o ~/albumum-work/album.json""",
+    "album spec": """\
+albumum album spec 7 --page 41
+albumum album spec 7 --thumbs -o ~/albumum-work/spec.json   # миниатюры — если автор разрешил""",
     "album set": """\
 albumum album set 7 --title "Эльбрус, июль" --date 2026-07-03
 albumum album set 7 --style ~/albumum-work/style.json""",
@@ -58,7 +63,10 @@ albumum page get 7 41 -o ~/albumum-work/page-41.json""",
 albumum page put 7 41 ~/albumum-work/page-41.json""",
     "page fill": """\
 albumum page fill 7 41 --place p1 --media 501
-albumum page fill 7 41 --place p2 --media 502 --crop dx=0,dy=-0.4,scale=1.2""",
+albumum page fill 7 41 --place p2 --media 502 --crop dx=0,dy=-0.4,scale=1.2
+albumum page fill 7 41 --place p3 --decoration 812      # свое украшение
+albumum page fill 7 41 --place p5 --text "Маше 5 лет!"
+albumum page fill 7 41 --place p4 --sticker sticker-balloons""",
     "page template": """\
 albumum page template 7 41 two-side --from ~/albumum-work/page-41.json --media 501,502""",
     "page image": """\

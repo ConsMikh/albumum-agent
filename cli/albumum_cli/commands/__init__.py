@@ -45,6 +45,7 @@ COVERED: dict[str, str] = {
     "albums.create": "album create",
     "albums.get": "album get",
     "albums.format_check": "album format-check",
+    "albums.design_spec": "album spec",
     "albums.update": "album set",
     "albums.trash": "album delete",
     "catalog.templates": "catalog templates",
@@ -61,6 +62,7 @@ COVERED: dict[str, str] = {
     "pages.trash": "page delete",
     "pages.trash_many": "pages trash",
     "pages.image": "page image",
+    "pages.place_fill": "page fill",
     # Публикация
     "publication.state": "publication status",
     "publication.publish": "publication publish",

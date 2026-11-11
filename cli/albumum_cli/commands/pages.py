@@ -159,7 +159,6 @@ GEOMETRY = ("id", "x", "y", "w", "h", "rotate", "z")
 # Рамка места и рамка из набора (frame, frame_color — у фото и видео): заполнение их не меняет.
 FRAME = ("shape", "radius", "stroke", "effects", "frame", "frame_color")
 MEDIA_KINDS = ("photo", "video")
-MEDIA_ROLES = ("media", *MEDIA_KINDS)
 CENTER = {"scale": 1, "dx": 0, "dy": 0}
 
 
@@ -213,13 +212,23 @@ def _is_backdrop(el: dict) -> bool:
     return el["x"] <= 0 and el["y"] <= 0 and el["x"] + el["w"] >= 1 and el["y"] + el["h"] >= 1
 
 
-def _slots(document: dict) -> list[str]:
-    return [
-        f"{e.get('id')}" + (f" ({e['label']})" if e.get("label") else "")
-        for e in document.get("elements", [])
-        if e.get("kind") in MEDIA_KINDS
-        or (e.get("kind") == "place" and e.get("role") in MEDIA_ROLES)
+def _slots(document: dict) -> str:
+    """Перечень для ошибки разбора: пустые места (id, подпись, роль) и стоящие фото и видео."""
+    elements = document.get("elements", [])
+    places = [
+        f"{e.get('id')}" + (f" ({e['label']})" if e.get("label") else "") + f" — {e.get('role')}"
+        for e in elements
+        if e.get("kind") == "place"
     ]
+    media = [
+        f"{e.get('id')}" + (f" ({e['place_label']})" if e.get("place_label") else "")
+        for e in elements
+        if e.get("kind") in MEDIA_KINDS
+    ]
+    return (
+        f"пустые места: {', '.join(places) or 'нет'}; "
+        f"фото и видео для замены файла (--media): {', '.join(media) or 'нет'}"
+    )
 
 
 def filled(el: dict, media: dict, crop: dict) -> dict:
@@ -248,7 +257,12 @@ def filled(el: dict, media: dict, crop: dict) -> dict:
 
 
 def _fill(args) -> int:
-    """Файл в место листа: чтение листа, замена в документе, запись по прочитанной ревизии."""
+    """Содержимое в место листа. Замена файла в стоящем фото или видео (`--media`) — прежним
+    путем: чтение листа, замена в документе, запись по прочитанной ревизии; прочее на элементе с
+    этим id — операцией сервера `pages.place_fill` по прочитанной ревизии (пустое место
+    заполнится, заполненное — 409 place_filled)."""
+    if args.crop is not None and args.media is None:
+        raise usage("--crop — только вместе с --media")
     crop = crop_value(args.crop) if args.crop is not None else None
     api = connect(args)
     album = api.run("albums.get", path={"album_id": args.album}) or {}
@@ -259,19 +273,14 @@ def _fill(args) -> int:
     elements = document.get("elements", [])
     index = next((i for i, e in enumerate(elements) if e.get("id") == args.place), None)
     el = elements[index] if index is not None else None
-    slot = el is not None and (
-        el.get("kind") in MEDIA_KINDS
-        or (el.get("kind") == "place" and el.get("role") in MEDIA_ROLES)
-    )
-    if not slot:
-        names = ", ".join(_slots(document)) or "нет"
-        raise usage(
-            f"На листе {args.page} нет места {args.place} под фото или видео; места: {names}"
-        )
+    if el is None:
+        raise usage(f"На листе {args.page} нет места {args.place}; {_slots(document)}")
+    if el.get("kind") not in MEDIA_KINDS or args.media is None:
+        # Пустое место — заполнение; заполненное (не замена файла) — отказ сервера place_filled
+        # с подсказкой.
+        return _place_fill(api, args, page, crop)
     media = api.run("library.get", path={"media_id": args.media}) or {}
     kind = media.get("kind")
-    if el.get("kind") == "place" and el.get("role") in MEDIA_KINDS and el["role"] != kind:
-        raise usage(f"Место {args.place} — под {el['role']}, а файл {args.media} — {kind}")
     if kind == "video" and _is_backdrop(el):
         raise usage(f"Место {args.place} — фон листа: туда только фото")
     if crop is None:
@@ -284,13 +293,7 @@ def _fill(args) -> int:
     elements[index] = filled(el, {"id": args.media, "kind": kind}, crop)
     body = {"revision": page["revision"], "document": document}
     path = {"album_id": args.album, "page_id": args.page}
-    try:
-        written = api.run("pages.write", path=path, json=body) or {}
-    except ApiError as error:
-        hint = FILL_HINTS.get(error.code)
-        if hint and error.status is not None:
-            error.body = {**(error.body or {}), "hint": hint}
-        raise
+    written = _with_hint(lambda: api.run("pages.write", path=path, json=body)) or {}
     return done(
         {
             "album_id": args.album,
@@ -304,12 +307,62 @@ def _fill(args) -> int:
     )
 
 
+def _place_fill(api, args, page: dict, crop: dict | None) -> int:
+    """Пустое место — одной операцией сервера: ревизия прочитанного листа и одно содержимое."""
+    body: dict = {"revision": page["revision"]}
+    if args.media is not None:
+        body["media"] = {"file": args.media}
+        if crop is not None:
+            body["crop"] = crop
+    elif args.decoration is not None:
+        body["decoration_media"] = args.decoration
+    elif args.sticker is not None:
+        body["decoration"] = args.sticker
+    else:
+        body["text"] = args.text
+    path = {"album_id": args.album, "page_id": args.page, "place_id": args.place}
+    written = _with_hint(lambda: api.run("pages.place_fill", path=path, json=body)) or {}
+    element = next(
+        (
+            e
+            for e in (written.get("document") or {}).get("elements", [])
+            if e.get("id") == args.place
+        ),
+        None,
+    )
+    return done(
+        {
+            "album_id": args.album,
+            "page_id": args.page,
+            "revision": written.get("revision"),
+            "place": args.place,
+            "kind": (element or {}).get("kind"),
+            "element": element,
+        }
+    )
+
+
+def _with_hint(call):
+    """Запрос записи листа; отказ получает следующий шаг из FILL_HINTS."""
+    try:
+        return call()
+    except ApiError as error:
+        hint = FILL_HINTS.get(error.code)
+        if hint and error.status is not None:
+            error.body = {**(error.body or {}), "hint": hint}
+        raise
+
+
 FILL_HINTS = {
     "revision_mismatch": "лист изменили между чтением и записью (кто и когда — в ответе): "
     "посмотрите, не правил ли человек это место; если нет — повторите page fill, лист "
     "перечитается",
     "invalid_document": "лист не записан: исправьте причину из errors (файл не готов, в "
     "корзине, не того вида) и повторите page fill",
+    "place_filled": "место уже заполнено — очистите его в редакторе или выберите другое",
+    "place_not_found": "такого пустого места на листе нет: пустые места листа — в ответе (places)",
+    "role_mismatch": "содержимое не подходит роли места: возьмите место нужной роли (album spec) "
+    "или другое содержимое",
 }
 
 
@@ -490,12 +543,28 @@ def register(sub) -> None:
 
     p = page.add_parser(
         "fill",
-        help="поставить файл в место листа: чтение листа, замена, запись по ревизии",
+        help="заполнить место листа: фото, видео, украшение, стикер или текст (по ревизии листа)",
     )
     p.add_argument("album", type=int, metavar="АЛЬБОМ", help="номер альбома (albums list)")
     p.add_argument("page", type=int, metavar="ЛИСТ", help="номер листа (pages[].id в album get)")
-    p.add_argument("--place", required=True, metavar="ID", help="id места или элемента в листе")
-    p.add_argument("--media", required=True, type=int, metavar="N", help="номер файла библиотеки")
+    p.add_argument(
+        "--place",
+        required=True,
+        metavar="ID",
+        help="id пустого места (album spec) или стоящего фото и видео — для замены файла",
+    )
+    content = p.add_mutually_exclusive_group(required=True)
+    content.add_argument("--media", type=int, metavar="N", help="фото или видео из библиотеки")
+    content.add_argument(
+        "--decoration",
+        type=int,
+        metavar="N",
+        help="собственное украшение из библиотеки (library list --kind decoration)",
+    )
+    content.add_argument(
+        "--sticker", metavar="ИМЯ", help="стикер или узор набора (catalog decorations)"
+    )
+    content.add_argument("--text", metavar="ТЕКСТ", help="текст в место под текст")
     p.add_argument(
         "--crop",
         metavar="КАДР",

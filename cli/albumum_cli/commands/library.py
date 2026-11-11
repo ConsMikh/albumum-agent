@@ -19,6 +19,7 @@ from albumum_cli.output import EXIT_ERROR, EXIT_OK, EXIT_PARTIAL, emit
 
 POLL_S = 2  # как часто спрашивать, готова ли версия (--wait)
 WAIT_LIMIT_S = 300  # сколько ждать всего
+UPLOAD_WAIT_S = 120  # сколько ждать обработки загруженных (upload --wait)
 
 
 def folder_value(text: str) -> int | None:
@@ -64,9 +65,73 @@ def _get(args) -> int:
 
 def _upload(args) -> int:
     files = upload.collect([Path(p) for p in args.paths])
-    report = upload.run(connect(args), files, args.folder)
+    api = connect(args)
+    kind = "decoration" if args.decoration else "auto"
+    report = upload.run(api, files, args.folder, kind)
+    if not args.wait:
+        emit(report)
+        return upload.report_exit(report)
+    report["failed"] = []
+    if "aborted" not in report:
+        try:
+            _wait_uploaded(api, report)
+        except ApiError as error:
+            report["aborted"] = {
+                "code": error.code,
+                "reason": error.reason,
+                "status": error.status,
+                "exit_code": exit_code(error),
+            }
+            report["not_attempted"] = []
     emit(report)
-    return upload.report_exit(report)
+    code = upload.report_exit(report)
+    if code != EXIT_OK or not (
+        report["failed"] or any(u.get("pending") for u in report["uploaded"])
+    ):
+        return code
+    return EXIT_PARTIAL if report["uploaded"] or report["skipped"] else EXIT_ERROR
+
+
+def _wait_uploaded(api: ApiClient, report: dict) -> None:
+    """Опрос карточек загруженных раз в POLL_S до `ready` или `failed`, всего до UPLOAD_WAIT_S:
+    готовые получают `status` и `window`, не прошедшие обработку переезжают в `failed`,
+    не дождавшиеся остаются с `pending`."""
+    deadline = time.monotonic() + UPLOAD_WAIT_S
+    uploaded = report["uploaded"]
+    waiting = [u for u in uploaded if u.get("status") == "processing"]
+    while waiting:
+        for item in list(waiting):
+            try:
+                card = api.run("library.get", path={"media_id": item["id"]}) or {}
+            except ApiError as error:
+                if exit_code(error) != EXIT_ERROR:
+                    raise
+                card = {"status": "failed", "code": error.code, "error": error.reason}
+            status = card.get("status")
+            if status == "ready":
+                item["status"] = "ready"
+                if "window" in item:
+                    item["window"] = card.get("window")
+            elif status == "failed":
+                uploaded.remove(item)
+                report["failed"].append(
+                    {
+                        "file": item["file"],
+                        "id": item["id"],
+                        "code": card.get("code", "failed"),
+                        "reason": card.get("error") or "",
+                    }
+                )
+            else:
+                continue
+            waiting.remove(item)
+        if not waiting:
+            return
+        if time.monotonic() + POLL_S > deadline:
+            for item in waiting:
+                item["pending"] = True
+            return
+        time.sleep(POLL_S)
 
 
 def _rendition_id(url: str) -> int:
@@ -133,7 +198,11 @@ def register(sub) -> None:
     lib = group(sub, "library", "библиотека файлов")
 
     p = lib.add_parser("list", help="файлы библиотеки (новые сверху)")
-    p.add_argument("--kind", choices=["photo", "video"])
+    p.add_argument(
+        "--kind",
+        choices=["photo", "video", "decoration", "all"],
+        help="вид файлов; без него — фото и видео, decoration — свои украшения, all — все",
+    )
     p.add_argument("--folder", metavar="ID|none", help="каталог или none — вне каталогов")
     p.add_argument("--from", dest="date_from", metavar="ГГГГ-ММ-ДД", help="снято не раньше")
     p.add_argument("--to", dest="date_to", metavar="ГГГГ-ММ-ДД", help="снято не позже")
@@ -152,6 +221,17 @@ def register(sub) -> None:
         "paths", nargs="+", metavar="ПУТЬ", help="файлы и папки; папки — рекурсивно, скрытые — мимо"
     )
     p.add_argument("--folder", type=int, metavar="ID", help="каталог назначения")
+    p.add_argument(
+        "--decoration",
+        action="store_true",
+        help="собственные украшения: только PNG и WebP с прозрачностью, прочие файлы — мимо",
+    )
+    p.add_argument(
+        "--wait",
+        action="store_true",
+        help=f"ждать обработки загруженных (до {UPLOAD_WAIT_S} с): готово или отказ, у украшения "
+        "— окно рамки (window)",
+    )
     p.set_defaults(handler=_upload)
 
     p = lib.add_parser(

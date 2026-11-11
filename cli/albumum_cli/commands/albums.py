@@ -13,6 +13,7 @@ from albumum_cli.commands import (
     usage,
     write_json,
 )
+from albumum_cli.output import note
 
 FORMAT_RE = re.compile(r"(\d+)[xх×](\d+)")
 SHEETS = ["single", "spread"]
@@ -144,6 +145,28 @@ def _format_check(args) -> int:
     return done(api.run("albums.format_check", path={"album_id": args.id}, params=params))
 
 
+THUMBS_OFF = "Миниатюры выключены автором (окно «Спецификация оформления»)"
+
+
+def _spec(args) -> int:
+    """Спецификация оформления альбома или листа: в stdout или в файл `-o`. Миниатюры фото не
+    разрешены автором — предупреждение в stderr, адресов снимков в ответе нет."""
+    params: dict = {}
+    if args.page is not None:
+        params["page"] = str(args.page)
+    if args.thumbs:
+        params["thumbs"] = "true"
+    spec = connect(args).run("albums.design_spec", path={"album_id": args.id}, params=params) or {}
+    if spec.get("thumbs") == "not_allowed":
+        note(THUMBS_OFF)
+    if not args.output:
+        return done(spec)
+    file = write_json(args.output, spec)
+    return done(
+        {"file": file, "album_id": args.id, "page": args.page, "thumbs": spec.get("thumbs")}
+    )
+
+
 def _delete(args) -> int:
     path = {"album_id": args.id}
     return done(connect(args).run("albums.trash", path=path, confirm=args.confirm))
@@ -200,6 +223,19 @@ def register(sub) -> None:
     p.add_argument("--format", required=True, metavar="ФОРМАТ", help=FORMAT_HELP)
     p.add_argument("--sheet", required=True, choices=SHEETS)
     p.set_defaults(handler=_format_check)
+
+    p = album.add_parser(
+        "spec", help="спецификация оформления: пиксели экрана и печати, места, соседи, стиль"
+    )
+    p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")
+    p.add_argument("--page", type=int, metavar="ЛИСТ", help="один лист (pages[].id в album get)")
+    p.add_argument(
+        "--thumbs",
+        action="store_true",
+        help="миниатюры фото — только если автор разрешил в окне «Спецификация оформления»",
+    )
+    p.add_argument("-o", "--output", metavar="ФАЙЛ", help="записать в файл, а не в stdout")
+    p.set_defaults(handler=_spec)
 
     p = album.add_parser("delete", help="альбом в корзину (только с подтверждением)")
     p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")

@@ -102,6 +102,20 @@ def _unsupported(path: Path) -> dict:
     return {"file": str(path), "code": "unsupported", "reason": reason}
 
 
+# Собственные украшения — только PNG и WebP с прозрачностью; прочее отсеивается до запроса.
+DECORATION_SUFFIXES = frozenset({".png", ".webp"})
+NOT_DECORATION = "not_decoration_format"
+
+
+def _not_decoration(path: Path) -> dict:
+    return {
+        "file": str(path),
+        "status": NOT_DECORATION,
+        "media_id": None,
+        "reason": "Украшение — только PNG или WebP с прозрачностью",
+    }
+
+
 def _rejected(path: Path, error: ApiError) -> dict:
     item = {"file": str(path), "code": error.code, "reason": error.reason}
     if error.code == "network_error":
@@ -109,8 +123,10 @@ def _rejected(path: Path, error: ApiError) -> dict:
     return item
 
 
-def _upload(client: ApiClient, path: Path, digest: str, folder_id: int | None) -> dict:
+def _upload(client: ApiClient, path: Path, digest: str, folder_id: int | None, kind: str) -> dict:
     data = {"sha256": digest}
+    if kind != "auto":
+        data["kind"] = kind
     if folder_id is not None:
         data["folder_id"] = str(folder_id)
     with path.open("rb") as handle:
@@ -123,15 +139,23 @@ class _Abort(Exception):
         self.rest = rest
 
 
-def run(client: ApiClient, files: list[Path], folder_id: int | None) -> dict:
+def run(client: ApiClient, files: list[Path], folder_id: int | None, kind: str = "auto") -> dict:
     """Предпроверка пачками по BATCH, загрузка новых по одному. Отчет:
     `{uploaded: [{file, id, kind, status}], skipped: [{file, status, media_id, reason}],
     rejected: [{file, code, reason}], ignored: [{file, code, reason}]}` (ignored — не медиа,
     на код выхода не влияют); прервано (ключ, темп, контракт, сбой предпроверки) —
-    еще `aborted: {code, reason, status, exit_code}` и `not_attempted: [файл…]`."""
+    еще `aborted: {code, reason, status, exit_code}` и `not_attempted: [файл…]`.
+    `kind="decoration"` — собственные украшения: вид — в предпроверке и загрузке, у загруженных
+    еще `window`; файлы не PNG/WebP — в `skipped` со статусом `not_decoration_format`, без
+    запросов."""
     if folder_id is not None:
         _check_folder(client, folder_id)
     report: dict = {"uploaded": [], "skipped": [], "rejected": [], "ignored": []}
+    if kind == "decoration":
+        report["skipped"].extend(
+            _not_decoration(p) for p in files if p.suffix.lower() not in DECORATION_SUFFIXES
+        )
+        files = [p for p in files if p.suffix.lower() in DECORATION_SUFFIXES]
     # Заведомо не медиа (.txt, .AAE, .xmp рядом со снимками) — в отчет без запросов в сеть и без
     # влияния на код выхода: такие файлы обычны в папке со снимками. Прочее решает система.
     foreign = {p for p in files if not_media(p)}
@@ -139,7 +163,8 @@ def run(client: ApiClient, files: list[Path], folder_id: int | None) -> dict:
     files = [p for p in files if p not in foreign]
     try:
         for start in range(0, len(files), BATCH):
-            _batch(client, files[start : start + BATCH], files[start:], folder_id, report)
+            batch = files[start : start + BATCH]
+            _batch(client, batch, files[start:], folder_id, report, kind)
     except _Abort as abort:
         error = abort.error
         report["aborted"] = {
@@ -157,19 +182,23 @@ def report_exit(report: dict) -> int:
     если остальные загружены или уже были в библиотеке, и 1, если не прошел ни один файл."""
     if "aborted" in report:
         return report["aborted"]["exit_code"]
+    passed = report["uploaded"] or [s for s in report["skipped"] if s["status"] != NOT_DECORATION]
     if not report["rejected"]:
-        # Ни одного медиафайла (только сайдкары) — не «готово», а ошибка: загружать было нечего.
-        if report["ignored"] and not (report["uploaded"] or report["skipped"]):
+        # Ни одного медиафайла (только сайдкары или не PNG/WebP для украшений) — не «готово»,
+        # а ошибка: загружать было нечего.
+        if not passed and (report["ignored"] or report["skipped"]):
             return EXIT_ERROR
         return EXIT_OK
-    return EXIT_PARTIAL if report["uploaded"] or report["skipped"] else EXIT_ERROR
+    return EXIT_PARTIAL if passed else EXIT_ERROR
 
 
-def _batch(client, batch: list[Path], rest: list[Path], folder_id, report: dict) -> None:
+def _batch(client, batch: list[Path], rest: list[Path], folder_id, report: dict, kind: str) -> None:
     readable: list[tuple[Path, dict]] = []
     for path in batch:
         try:
             item = {"name": path.name, "size": path.stat().st_size, "sha256": sha256_of(path)}
+            if kind != "auto":
+                item["kind"] = kind
         except OSError as exc:
             report["rejected"].append(_unreadable(path, exc))
             continue
@@ -202,7 +231,7 @@ def _batch(client, batch: list[Path], rest: list[Path], folder_id, report: dict)
             continue
         note(f"Загрузка {path}")
         try:
-            media = _upload(client, path, item["sha256"], folder_id) or {}
+            media = _upload(client, path, item["sha256"], folder_id, kind) or {}
         except OSError as exc:
             report["rejected"].append(_unreadable(path, exc))
             continue
@@ -222,11 +251,12 @@ def _batch(client, batch: list[Path], rest: list[Path], folder_id, report: dict)
             else:
                 report["rejected"].append(_rejected(path, error))
             continue
-        report["uploaded"].append(
-            {
-                "file": str(path),
-                "id": media.get("id"),
-                "kind": media.get("kind"),
-                "status": media.get("status"),
-            }
-        )
+        row = {
+            "file": str(path),
+            "id": media.get("id"),
+            "kind": media.get("kind"),
+            "status": media.get("status"),
+        }
+        if kind == "decoration":
+            row["window"] = media.get("window")
+        report["uploaded"].append(row)
