@@ -103,6 +103,7 @@
     if (-not $localData) { $localData = [Environment]::GetFolderPath('LocalApplicationData') }
     $skillsHome = [IO.Path]::Combine($localData, 'albumum', 'skills')
     $sep = [IO.Path]::PathSeparator
+    $harnessSummary = ''
 
     # albumum update запускает установку в отдельном окне и сразу выходит: пока он работает, его
     # albumum.exe и python.exe заняты, и uv не сможет их заменить.
@@ -191,17 +192,32 @@
         [IO.Directory]::CreateDirectory($skillsHome) | Out-Null
         Get-ChildItem -LiteralPath $skillsSrc -Force | Copy-Item -Destination $skillsHome -Recurse -Force
         $names = @(Get-ChildItem -LiteralPath $skillsHome -Directory | ForEach-Object { $_.Name })
-        # OpenCode читает оба этих каталога сам.
-        $agentDirs = @([IO.Path]::Combine($userHome, '.claude', 'skills'), [IO.Path]::Combine($userHome, '.agents', 'skills'))
-        foreach ($dir in $agentDirs) {
+        # Каталоги харнессов — по перечню утилиты: общий всегда, собственный — найденным харнессам,
+        # которые общий не читают; копии с меткой, устаревшие копии утилита убирает во всех каталогах.
+        # Вывод утилиты — в UTF-8, как читает окно (см. OutputEncoding в конце блока); переменная окна
+        # возвращается прежней: «irm | iex» идет в окне человека.
+        $ioEncoding = $env:PYTHONIOENCODING
+        $env:PYTHONIOENCODING = 'utf-8'
+        try {
+          $link = Invoke-Tool $albumum @('harnesses', '--link')
+        } finally {
+          $env:PYTHONIOENCODING = $ioEncoding
+        }
+        if ($link.Code -eq 0) {
+          $harnessSummary = $link.Out.TrimEnd()
+        } else {
+          Warn 'перечень харнессов недоступен — подключаю только общий каталог'
+          $shared = [IO.Path]::Combine($userHome, '.agents', 'skills')
           try {
-            [IO.Directory]::CreateDirectory($dir) | Out-Null
+            [IO.Directory]::CreateDirectory($shared) | Out-Null
+            foreach ($name in $names) { Copy-Skill (Join-Path $skillsHome $name) $shared }
+            Remove-StaleCopy $shared $names
+            $harnessSummary = ('Другой харнесс? Укажите ему каталог %USERPROFILE%\.agents\skills — см. «Ручное подключение» в README.' +
+              [Environment]::NewLine + 'Перезапустите харнесс, чтобы он увидел скиллы.')
           } catch {
-            Warn "не удалось создать $dir — скиллы для этого агента не подключены"
-            continue
+            Warn "не удалось создать $shared — скиллы не подключены"
+            $harnessSummary = ''
           }
-          foreach ($name in $names) { Copy-Skill (Join-Path $skillsHome $name) $dir }
-          Remove-StaleCopy $dir $names
         }
       }
     } finally {
@@ -210,10 +226,6 @@
 
     # --- итог --------------------------------------------------------------------------------------
     Say ''
-    Say "Установлено: $((Invoke-Tool $albumum @('--version')).Out.Trim())."
-    if ($withSkills) {
-      Say 'Скиллы для Claude Code, Codex и OpenCode: %USERPROFILE%\.claude\skills и %USERPROFILE%\.agents\skills.'
-    }
     $known = @($userPath.Split($sep) | ForEach-Object { $_.TrimEnd('\', '/') })
     if ($known -notcontains $bin.TrimEnd('\', '/')) {
       if ((Invoke-Tool $uv @('tool', 'update-shell') -Quiet).Code -ne 0) { Warn "не удалось добавить $bin в PATH" }
@@ -236,6 +248,10 @@
       Say '  3. Проверьте: albumum whoami'
       Say '  Или скажите своему агенту: «подключи меня к Albumum».'
     }
+    # Итог по харнессам — последним (спец. 5.3): его последние строки — что делать человеку.
+    Say ''
+    Say "Установлено: $((Invoke-Tool $albumum @('--version')).Out.Trim())"
+    if ($harnessSummary) { Say $harnessSummary }
   }
 
   # Кириллица в консоли 5.1 (cp866/cp1251) и в выводе, перенаправленном в albumum update.

@@ -4,6 +4,10 @@
 import argparse
 
 EXAMPLES: dict[str, str] = {
+    "harnesses": """\
+albumum harnesses                # харнессы на компьютере и подключены ли скиллы
+albumum harnesses --link         # подключить скиллы найденным харнессам
+albumum harnesses --plain        # строки для установщика""",
     "library upload": """\
 albumum library upload ~/Фото/Эльбрус --folder 12
 albumum library upload IMG_0001.HEIC IMG_0002.MOV
@@ -44,7 +48,9 @@ albumum album spec 7 --page 41
 albumum album spec 7 --thumbs -o ~/albumum-work/spec.json   # миниатюры — если автор разрешил""",
     "album set": """\
 albumum album set 7 --title "Эльбрус, июль" --date 2026-07-03
-albumum album set 7 --style ~/albumum-work/style.json""",
+albumum album set 7 --style ~/albumum-work/style.json
+albumum album set 7 --cols 3 --col-gap 0.02 --margins safe    # сетка — только с согласия автора
+albumum album set 7 --grid ~/albumum-work/grid.json --safe 0.05""",
     "pages background-copy": """\
 albumum album get 7 -o ~/albumum-work/album.json
 albumum pages background-copy 7 175 --from ~/albumum-work/album.json""",

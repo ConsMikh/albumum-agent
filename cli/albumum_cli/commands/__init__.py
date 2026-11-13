@@ -13,6 +13,9 @@ from albumum_cli.output import EXIT_OK, emit, note
 COVERED: dict[str, str] = {
     "me.get": "whoami",
     "system.version": "version",
+    # S8.5: команды — Task 16; `albumum harnesses` берет локальный перечень (колесо), адрес
+    # system.harnesses — для утилиты старых версий.
+    "system.harnesses": "harnesses",
     "agent.contract": "contract",
     "agent.layout_schema": "schema",
     # Библиотека и каталоги

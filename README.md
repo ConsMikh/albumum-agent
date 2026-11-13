@@ -64,22 +64,68 @@ albumum whoami
 - [`uv`](https://docs.astral.sh/uv/), если его нет;
 - утилита `albumum` (`uv tool install`) той версии, что в последнем выпуске зеркала;
 - скиллы — в `~/.local/share/albumum/skills/` (Windows — `%LOCALAPPDATA%\albumum\skills\`), оттуда ссылками
-  (Windows — копиями) в `~/.claude/skills` и `~/.agents/skills`. Эти каталоги читают Claude Code, Codex и
-  OpenCode; для других агентов подключите общий каталог вручную.
+  (Windows — копиями) в общий каталог `~/.agents/skills` и в собственный каталог каждого найденного харнесса,
+  который общий не читает (перечень — в разделе «Харнессы»). Что подключено — `albumum harnesses`, подключить
+  заново — `albumum harnesses --link`; для харнесса вне перечня см. «Ручное подключение».
 
 Параметры установщика: `--version X.Y.Z` (или `ALBUMUM_VERSION`), `--from ПАПКА` (папка с
 `albumum_cli-*.whl` и `skills/`), `--no-skills`. На Windows те же параметры задаются переменными
 `ALBUMUM_VERSION`, `ALBUMUM_FROM`, `ALBUMUM_NO_SKILLS`.
 
+<!-- harnesses:begin -->
+## Харнессы
+
+Установщик всегда подключает скиллы в общий каталог `~/.agents/skills`, а харнессам, которые его не читают, — еще и в их собственный каталог (если харнесс найден на компьютере). Что подключено у вас — `albumum harnesses`; найденным харнессам подключить скиллы заново — `albumum harnesses --link`.
+
+| Харнесс | Собственный каталог скиллов | Читает общий каталог (по документации) | Куда ставит установщик |
+|---|---|---|---|
+| Claude Code | `~/.claude/skills` (Windows: `%USERPROFILE%\.claude\skills`) | нет | `~/.claude/skills` |
+| Codex CLI | — | да | `~/.agents/skills` |
+| OpenCode | `~/.config/opencode/skills` | да | `~/.agents/skills` |
+| pi | `~/.pi/agent/skills` | да | `~/.agents/skills` |
+| oh-my-pi | `~/.omp/agent/skills` | нет | `~/.omp/agent/skills` |
+| Hermes Agent | `~/.hermes/skills` | нет | `~/.hermes/skills` |
+| OpenClaw | `~/.openclaw/skills` | да | `~/.agents/skills` |
+| Gemini CLI | `~/.gemini/skills` | да | `~/.agents/skills` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/skills` (Windows: `%USERPROFILE%\.gemini\antigravity-cli\skills`) | нет | `~/.gemini/antigravity-cli/skills` |
+| GitHub Copilot CLI | `~/.copilot/skills` | да | `~/.agents/skills` |
+| Cursor (cursor-agent) | `~/.cursor/skills` | да | `~/.agents/skills` |
+| SourceCraft Code Assistant | `~/.codeassistant/skills` | да | `~/.agents/skills` |
+| DeepSeek Harness | `~/.dsh/skills` | да | `~/.agents/skills` |
+
+Колонка «Читает общий каталог» — по документации харнессов и сторонним описаниям, установкой не проверена; при сомнении смотрите строку своего харнесса в «По харнессам». Проверено ли подключение на вашей системе — таблица [HARNESSES.md](HARNESSES.md).
+
+## Ручное подключение
+
+Харнесса нет в списке или скиллы в нем не видны? Укажите ему каталог `~/.local/share/albumum/skills` (Windows — `%LOCALAPPDATA%\albumum\skills`) или скопируйте папки `albumum*` из него в каталог скиллов харнесса. Харнессу нужны запуск команд и чтение `SKILL.md`. После подключения перезапустите харнесс.
+
+По харнессам:
+
+- **Claude Code.** Положите ссылки (на Windows — копии) папок `albumum*` из `~/.local/share/albumum/skills` в `~/.claude/skills`.
+- **Codex CLI.** Читает `~/.agents/skills` сам. При закрытой сети разрешите ее: `network_access = true` в разделе [sandbox_workspace_write] файла `~/.codex/config.toml`.
+- **OpenCode.** Читает `~/.agents/skills` сам; собственный каталог — `~/.config/opencode/skills`.
+- **pi.** Читает `~/.agents/skills` сам; собственный каталог — `~/.pi/agent/skills`.
+- **oh-my-pi.** Установщик кладет ссылки в `~/.omp/agent/skills`. Вместо этого можно включить общий каталог: enableAgentsUser: true в блоке skills: файла `~/.omp/agent/config.yml`.
+- **Hermes Agent.** Установщик кладет ссылки в `~/.hermes/skills`. Вместо этого можно добавить `~/.agents/skills` в skills.external_dirs файла `~/.hermes/config.yaml`.
+- **OpenClaw.** Читает `~/.agents/skills` сам; собственный каталог — `~/.openclaw/skills`.
+- **Gemini CLI.** Читает `~/.agents/skills` сам; собственный каталог — `~/.gemini/skills`.
+- **Antigravity CLI.** Установщик кладет ссылки в `~/.gemini/antigravity-cli/skills`. Каталог `~/.gemini/skills` не трогайте: его читает и Gemini CLI, скиллы задвоятся.
+- **GitHub Copilot CLI.** Читает `~/.agents/skills`; если скиллы не видны — ссылки в `~/.copilot/skills` или каталог в переменной `COPILOT_SKILLS_DIRS`.
+- **Cursor (cursor-agent).** Читает `~/.agents/skills`; если скиллы не видны — ссылки в `~/.cursor/skills`.
+- **SourceCraft Code Assistant.** Глобальный каталог скиллов расширения не подтвержден: если скиллы не видны, положите ссылки в `~/.codeassistant/skills` или в `.sourcecraft/skills/` репозитория.
+- **DeepSeek Harness.** Читает `~/.agents/skills` (по стороннему описанию); если скиллы не видны — ссылки в `<dshHome>/skills`.
+<!-- harnesses:end -->
+
 ## Команды
 
 | Группа | Команды |
 |---|---|
-| Подключение | `albumum init`, `whoami`, `version`, `update`, `contract [--op ID]`, `schema`, `call МЕТОД ПУТЬ` (запасной путь по контракту) |
+| Подключение | `albumum init`, `whoami`, `version`, `update`, `contract [--op ID]`, `schema`, `config set-url`, `call МЕТОД ПУТЬ` (запасной путь по контракту), `harnesses [--link]` (куда подключены скиллы) |
 | Библиотека | `albumum library list / get / upload / image / original / trash / move / taken-at / usage / used-in`, `folders list / create / rename / delete` |
+| Обработка файлов | `albumum library process / trim / poster / current / version-trash / version-file` |
 | Корзина | `albumum trash list / restore / purge` |
-| Альбомы | `albumum albums list`, `album create / get / set / format-check / delete`, `catalog fonts / templates / formats` |
-| Листы | `albumum pages add / trash / order / background`, `page get / put / fill / template / delete / image` |
+| Альбомы | `albumum albums list`, `album create / get / set / format-check / spec / delete`, `catalog fonts / decorations / templates / formats` |
+| Листы | `albumum pages add / trash / order / background / background-copy`, `page get / put / fill / template / delete / image` |
 | Публикация | `albumum publication status / publish / revoke / withdraw / album`, `publication password set / clear` |
 
 Справка по любой команде — `--help` (у основных команд — с примерами). `albums list`, `album set`, `pages add`, `catalog templates`

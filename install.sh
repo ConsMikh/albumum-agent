@@ -83,6 +83,23 @@ drop_stale_links() {
   done
 }
 
+link_shared_only() {
+  # Утилита без перечня харнессов: скиллы — только в общий каталог; итог — в stdout.
+  warn "перечень харнессов недоступен — подключаю только общий каталог"
+  dir="$HOME/.agents/skills"
+  if ! mkdir -p "$dir" 2>/dev/null; then
+    warn "не удалось создать $dir — скиллы не подключены"
+    return 0
+  fi
+  for skill in "$SKILLS_HOME"/*/; do
+    [ -d "$skill" ] || continue
+    link_skill "${skill%/}" "$dir"
+  done
+  drop_stale_links "$dir"
+  say "Другой харнесс? Укажите ему каталог ~/.agents/skills — см. «Ручное подключение» в README."
+  say "Перезапустите харнесс, чтобы он увидел скиллы."
+}
+
 # Всё тело — в функции: оборванная загрузка «curl | sh» ничего не выполнит, а оболочка прочитает
 # скрипт целиком до первой запущенной программы.
 main() {
@@ -164,33 +181,21 @@ main() {
   PATH="$BIN:$PATH"
   command -v albumum >/dev/null 2>&1 || die "утилита поставлена, но не найдена в $BIN — откройте терминал заново и запустите установку ещё раз"
 
+  HARNESS_SUMMARY=""
   if [ "$WITH_SKILLS" = 1 ]; then
     say "Кладу скиллы в $SKILLS_HOME…"
     rm -rf "$SKILLS_HOME"
     mkdir -p "$SKILLS_HOME"
     cp -R "$SKILLS_SRC/." "$SKILLS_HOME/"
-    # Каталоги скиллов агентов — явным списком: пути с пробелами не разбиваются.
-    # OpenCode читает оба этих каталога сам.
-    set -- "$HOME/.claude/skills" "$HOME/.agents/skills"
-    for dir; do
-      if ! mkdir -p "$dir" 2>/dev/null; then
-        warn "не удалось создать $dir — скиллы для этого агента не подключены"
-        continue
-      fi
-      for skill in "$SKILLS_HOME"/*/; do
-        [ -d "$skill" ] || continue
-        link_skill "${skill%/}" "$dir"
-      done
-      drop_stale_links "$dir"
-    done
+    # Каталоги харнессов — по перечню утилиты: общий ~/.agents/skills всегда, собственный — найденным
+    # харнессам, которые общий не читают; устаревшие ссылки набора утилита убирает во всех каталогах.
+    code=0
+    HARNESS_SUMMARY=$(albumum harnesses --link) || code=$?
+    [ "$code" = 0 ] || HARNESS_SUMMARY=$(link_shared_only)
   fi
 
   # --- итог --------------------------------------------------------------------------------------
   say ""
-  say "Установлено: $(albumum --version)."
-  if [ "$WITH_SKILLS" = 1 ]; then
-    say "Скиллы для Claude Code, Codex и OpenCode: ~/.claude/skills и ~/.agents/skills."
-  fi
   case ":$USER_PATH:" in
     *":$BIN:"*) ;;
     *)
@@ -218,6 +223,10 @@ main() {
     say "  3. Проверьте: albumum whoami"
     say "  Или скажите своему агенту: «подключи меня к Albumum»."
   fi
+  # Итог по харнессам — последним (спец. 5.3): его последние строки — что делать человеку.
+  say ""
+  say "Установлено: $(albumum --version)"
+  [ -z "$HARNESS_SUMMARY" ] || say "$HARNESS_SUMMARY"
 }
 
 main "$@"

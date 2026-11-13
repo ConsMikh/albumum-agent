@@ -10,7 +10,7 @@ import sys
 
 import httpx
 
-from albumum_cli import __version__, commands, config
+from albumum_cli import __version__, commands, config, harnesses
 from albumum_cli.client import ApiError, exit_code
 from albumum_cli.output import (
     EXIT_ACTION,
@@ -65,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"albumum {__version__}")
     parser.add_argument("--url", metavar="АДРЕС", help="адрес системы вместо настроенного")
     sub = parser.add_subparsers(dest="command", required=True)
+    harnesses.register(sub)  # локальная команда: без сети и ключа
     commands.register(sub)
     return parser
 

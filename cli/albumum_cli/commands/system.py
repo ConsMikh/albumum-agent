@@ -219,6 +219,8 @@ def _update(args) -> int:
     if result.returncode != 0:
         fail(f"Установка набора завершилась с кодом {result.returncode}", "install_failed")
         return EXIT_ERROR
+    # Скиллы харнессам подключил сам install.sh новой утилитой (`albumum harnesses --link`) и
+    # напечатал итог: второй раз не подключаем.
     return EXIT_OK
 
 

@@ -1,9 +1,12 @@
 """HTTP-клиент системы Albumum: запросы по контракту, ключ, темп, подтверждение, повтор."""
 
+import errno
 import hashlib
 import json
 import os
 import re
+import socket
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -11,7 +14,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from albumum_cli import SUPPORTED_CONTRACT, __version__, versions
+from albumum_cli import SUPPORTED_CONTRACT, __version__, harnesses, versions
 from albumum_cli.output import (
     EXIT_ACTION,
     EXIT_AUTH,
@@ -26,6 +29,8 @@ RATE_WAITS = 3  # сколько раз ждать Retry-After на 429
 MAX_WAIT_S = 65  # дольше одного ожидания не ждем
 NET_RETRIES = 2  # повторы после обрыва связи (только чтение и запросы с ключом повтора)
 CONTRACT_TTL_S = 600
+DNS_TIMEOUT_S = 2.0  # проверка «есть ли сеть вообще» при отказе соединения
+PROBE_HOST = "github.com"
 CONTRACT_PATH = "/api/agent/contract"
 CACHE_DIR = Path(os.environ.get("ALBUMUM_CACHE", "~/.cache/albumum")).expanduser()
 CONFIRM_HEADER = "X-Albumum-Confirm"
@@ -141,14 +146,87 @@ def check_url(url: str, token: str | None) -> None:
         )
 
 
+def _cause_of(exc: BaseException) -> str | None:
+    """«dns» — имя не разрешилось; «blocked» — соединение запрещено или сети нет (EPERM песочницы,
+    ENETUNREACH, EHOSTUNREACH); «refused» — узел достижим, но порт закрыт; None — другой обрыв.
+    httpx прячет причину в цепочке исключений."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, socket.gaierror):
+            return "dns"
+        if isinstance(seen, ConnectionRefusedError):
+            return "refused"
+        if isinstance(seen, PermissionError) or (
+            isinstance(seen, OSError) and seen.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH)
+        ):
+            return "blocked"
+        seen = seen.__cause__ or seen.__context__
+    return None
+
+
+def _resolves(host: str) -> bool:
+    """Разрешается ли имя за DNS_TIMEOUT_S: getaddrinfo без тайм-аута, поэтому — в потоке."""
+    result: list[bool] = []
+
+    def lookup() -> None:
+        try:
+            socket.getaddrinfo(host, None)
+            result.append(True)
+        except (OSError, TimeoutError, UnicodeError):
+            result.append(False)
+
+    worker = threading.Thread(target=lookup, daemon=True)
+    worker.start()
+    worker.join(DNS_TIMEOUT_S)
+    return bool(result and result[0])
+
+
+def classify_network(exc: httpx.TransportError, url: str) -> ApiError:
+    """Обрыв связи: песочница харнесса без сети (`sandbox_no_network`) или прежний
+    `network_error`. Код выхода у обоих прежний (1)."""
+    plain = ApiError(None, "network_error", f"Нет связи с системой {url}: {exc}")
+    cause = _cause_of(exc)
+    if cause is None:
+        return plain
+    host = urlsplit(url).hostname
+    # Ошибка DNS при живом DNS (адрес системы или github.com разрешается) — опечатка в адресе или
+    # недоступное имя, а не песочница: CLAUDECODE задан в любом сеансе Claude Code.
+    if cause == "dns" and ((host and _resolves(host)) or _resolves(PROBE_HOST)):
+        return plain
+    # Отказ соединения — узел достижим: внутри харнесса это скорее остановленная система, чем
+    # песочница. Такой отказ идет к проверке DNS.
+    harness = harnesses.running_inside() if cause != "refused" else None
+    if harness is not None:
+        advice = (
+            f"Разрешите сеть: {harness.network_hint}"
+            if harness.network_hint
+            else "Разрешите сеть в настройках песочницы харнесса"
+        )
+        return ApiError(
+            None,
+            "sandbox_no_network",
+            f"Похоже, харнесс {harness.title} запускает команды в песочнице без сети. {advice}",
+        )
+    if cause != "dns" and ((host and _resolves(host)) or _resolves(PROBE_HOST)):
+        return plain
+    return ApiError(
+        None,
+        "sandbox_no_network",
+        "Нет сети внутри среды агента. Если харнесс запускает команды в песочнице, "
+        f"разрешите ей доступ к сети или к адресу {url}",
+    )
+
+
 def get_version(url: str, transport=None) -> dict:
     """GET /api/system/version — публичный путь: ключ агента на него не отправляется."""
     headers = {"User-Agent": USER_AGENT}
     try:
         with httpx.Client(timeout=TIMEOUT, transport=transport) as http:
             response = http.get(f"{url}/api/system/version", headers=headers)
+    except httpx.TransportError as exc:
+        raise classify_network(exc, url) from None
     except httpx.HTTPError as exc:
-        raise ApiError(None, "network_error", f"Система {url} недоступна: {exc}") from None
+        raise ApiError(None, "network_error", f"Нет связи с системой {url}: {exc}") from None
     if response.status_code != 200:
         raise _refusal(response)
     try:
@@ -283,9 +361,7 @@ class ApiClient:
                     broken += 1
                     sleep(broken)
                     continue
-                raise ApiError(
-                    None, "network_error", f"Нет связи с системой {self.url}: {exc}"
-                ) from None
+                raise classify_network(exc, self.url) from None
 
     # --- контракт ---
 

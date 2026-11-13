@@ -22,6 +22,10 @@ path = "albumum_cli/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["albumum_cli"]
 
+# Перечень харнессов лежит рядом с утилитой (agent/harnesses.json) и кладется в пакет.
+[tool.hatch.build.targets.wheel.force-include]
+"../harnesses.json" = "albumum_cli/harnesses.json"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

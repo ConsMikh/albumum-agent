@@ -1,7 +1,9 @@
-"""Альбомы: список, создание, чтение, свойства и формат, проверка формата, корзина."""
+"""Альбомы: список, создание, чтение, свойства, формат и сетка, проверка формата, корзина."""
 
+import json
 import re
 
+from albumum_cli.client import ApiError
 from albumum_cli.commands import (
     add_confirm,
     add_full,
@@ -92,11 +94,65 @@ def _get(args) -> int:
     return done({"file": file, "album_id": album.get("id"), "pages": len(album.get("pages", []))})
 
 
+# Флаг сетки -> поле `grid` в теле `albums.update`.
+GRID_FLAGS = {"cols": "cols", "col_gap": "col_gap", "rows": "rows", "row_gap": "row_gap"}
+MARGIN_SIDES = ("top", "bottom", "left", "right")
+
+
+def grid_margins(text: str) -> dict | None:
+    """«safe» — поля по безопасной зоне (None); иначе четыре доли «верх,низ,лево,право»."""
+    if text.strip().casefold() == "safe":
+        return None
+    parts = text.split(",")
+    try:
+        values = [float(part) for part in parts]
+    except ValueError:
+        values = []
+    if len(values) != len(MARGIN_SIDES):
+        raise usage(f"--margins ждет safe или четыре доли верх,низ,лево,право "
+                    f"(например 0.05,0.05,0.04,0.06), получено: {text}")  # fmt: skip
+    return dict(zip(MARGIN_SIDES, values, strict=True))
+
+
+def grid_flags_given(args) -> bool:
+    return args.margins is not None or any(getattr(args, f) is not None for f in GRID_FLAGS)
+
+
+def grid_body(api, args) -> dict | None:
+    """Сетка альбома для тела: `--grid` — целиком (текст JSON или файл); флаги — поверх
+    прежней сетки альбома (названные поля меняются, прочие остаются). None — сетку не менять."""
+    if args.grid is not None:
+        text = args.grid.strip()
+        if not text.startswith("{"):
+            return read_json(args.grid)
+        try:
+            return json.loads(text)
+        except ValueError as exc:
+            raise ApiError(None, "invalid_input", f"--grid — не JSON: {exc}") from None
+    if not grid_flags_given(args):
+        return None
+    album = api.run("albums.get", path={"album_id": args.id}) or {}
+    grid = dict(album.get("grid") or {})
+    for flag, field in GRID_FLAGS.items():
+        if (value := getattr(args, flag)) is not None:
+            grid[field] = value
+    if args.margins is not None:
+        grid["margins"] = grid_margins(args.margins)
+    return grid
+
+
 def _set(args) -> int:
-    given = (args.title, args.date, args.description, args.format, args.sheet, args.style)
-    if all(value is None for value in given):
+    given = (args.title, args.date, args.description, args.format, args.sheet, args.style,
+             args.safe, args.grid)  # fmt: skip
+    if all(value is None for value in given) and not grid_flags_given(args):
         raise usage("Нечего менять: укажите хотя бы одно из --title, --date, --description, "
-                    "--format, --sheet, --style")  # fmt: skip
+                    "--format, --sheet, --style, --safe, --grid, --cols, --col-gap, --rows, "
+                    "--row-gap, --margins")  # fmt: skip
+    if args.grid is not None and grid_flags_given(args):
+        raise usage("--grid задает сетку целиком: не сочетайте его с --cols, --col-gap, "
+                    "--rows, --row-gap, --margins")  # fmt: skip
+    if args.margins is not None:
+        grid_margins(args.margins)  # неверные поля — до сети
     api = connect(args)
     body: dict = {}
     for field, value in (
@@ -112,6 +168,10 @@ def _set(args) -> int:
         body["sheet"] = args.sheet
     if args.style is not None:
         body["style"] = read_json(args.style)
+    if args.safe is not None:
+        body["safe"] = args.safe
+    if (grid := grid_body(api, args)) is not None:
+        body["grid"] = grid
     if args.confirm:
         body["confirm_format"] = True  # «да» человека на смену формата, затрагивающую страницы
     path = {"album_id": args.id}
@@ -119,19 +179,22 @@ def _set(args) -> int:
     if args.full:
         return done(album)
     changed = [CHANGED.get(field, field) for field in body if field != "confirm_format"]
-    return done(
-        {
-            "album_id": album.get("id", args.id),
-            "changed": list(dict.fromkeys(changed)),
-            "title": album.get("title"),
-            "event_date": album.get("event_date"),
-            "page_w": album.get("page_w"),
-            "page_h": album.get("page_h"),
-            "sheet": album.get("sheet"),
-            "page_count": album.get("page_count"),
-            "updated_at": album.get("updated_at"),
-        }
-    )
+    brief = {
+        "album_id": album.get("id", args.id),
+        "changed": list(dict.fromkeys(changed)),
+        "title": album.get("title"),
+        "event_date": album.get("event_date"),
+        "page_w": album.get("page_w"),
+        "page_h": album.get("page_h"),
+        "sheet": album.get("sheet"),
+        "page_count": album.get("page_count"),
+        "updated_at": album.get("updated_at"),
+    }
+    # Зона и сетка — в итоге только измененные: так видно, что записала система.
+    for field in ("safe", "grid"):
+        if field in body:
+            brief[field] = album.get(field)
+    return done(brief)
 
 
 # Поле тела -> что изменилось в кратком итоге `album set`.
@@ -206,7 +269,7 @@ def register(sub) -> None:
     p.add_argument("-o", "--output", metavar="ФАЙЛ", help="записать в файл, а не в stdout")
     p.set_defaults(handler=_get)
 
-    p = album.add_parser("set", help="изменить свойства, стиль или формат")
+    p = album.add_parser("set", help="изменить свойства, стиль, формат, сетку или безопасную зону")
     p.add_argument("id", type=int, metavar="ID", help="номер альбома (albums list)")
     p.add_argument("--title", metavar="НАЗВАНИЕ")
     p.add_argument("--date", metavar="ГГГГ-ММ-ДД")
@@ -214,6 +277,28 @@ def register(sub) -> None:
     p.add_argument("--format", metavar="ФОРМАТ", help=FORMAT_HELP)
     p.add_argument("--sheet", choices=SHEETS)
     p.add_argument("--style", metavar="ФАЙЛ", help="стиль альбома из файла JSON")
+    p.add_argument(
+        "--safe",
+        type=float,
+        metavar="ДОЛЯ",
+        help="безопасная зона: доля короткой стороны страницы, 0–0.15 (по умолчанию 0.04)",
+    )
+    p.add_argument(
+        "--grid",
+        metavar="JSON",
+        help="сетка альбома целиком: текст JSON или файл; поля margins, cols, col_gap, rows, "
+        "row_gap, right (своя сетка правой страницы разворота)",
+    )
+    p.add_argument("--cols", type=int, metavar="N", help="колонки сетки, 0–12 (0 — без колонок)")
+    p.add_argument("--col-gap", type=float, metavar="ДОЛЯ", help="промежуток колонок: доля ширины")
+    p.add_argument("--rows", type=int, metavar="N", help="ряды сетки, 0–12 (0 — без рядов)")
+    p.add_argument("--row-gap", type=float, metavar="ДОЛЯ", help="промежуток рядов: доля высоты")
+    p.add_argument(
+        "--margins",
+        metavar="safe|В,Н,Л,П",
+        help="поля сетки: safe — по безопасной зоне, или доли страницы верх,низ,лево,право "
+        "(на развороте лево/право — внешнее/внутреннее)",
+    )
     add_confirm(p)
     add_full(p, "альбом целиком — стиль, листы с документами")
     p.set_defaults(handler=_set)
